@@ -120,7 +120,7 @@ def set_page_config(page : str = "Start"):
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={
-            'Get help': 'https://github.com/msei99/pbgui/#readme',
+            'Get help': 'https://github.com/crackerslekap/pbgui/#readme',
             'About': "Passivbot GUI v1.37 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y216Q3QS)"
         }
     )
