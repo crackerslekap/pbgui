@@ -53,7 +53,7 @@ cd ../..
 deactivate
 
 # Clone the pbgui repository
-git clone https://github.com/msei99/pbgui.git
+git clone https://github.com/crackerslekap/pbgui.git
 # Create a virtual environment for pbgui
 python3.10 -m venv $DIR/venv_pbgui
 # Activate the virtual environment

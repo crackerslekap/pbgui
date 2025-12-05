@@ -28,7 +28,6 @@ CANCEL_FILE_OPTIMIZE_MULTI = Path("data/cancel_optimize_multi.flag")
 
 def _write_progress_multi(payload: Dict[str, object], path: Path = PROGRESS_FILE_OPTIMIZE_MULTI):
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload["updated"] = time.time()
     path.write_text(json.dumps(payload))
 
 
@@ -47,23 +46,11 @@ def render_optimize_multi_progress(label: str = "Multi Optimize"):
     status = data.get("status", "Idle")
     eta = data.get("eta", "")
     detail = data.get("detail", "")
-    step = data.get("step")
-    total = data.get("total")
-    info_text = f"{label}: {status}" + (f" • {detail}" if detail else "")
-    if step and total:
-        info_text += f" • {step}/{total}"
-    if eta:
-        info_text += f" • ETA {eta}"
-    st.progress(percent / 100 if percent <= 100 else 1.0, text=info_text)
-    col_cancel, col_refresh = st.columns([1, 1])
-    with col_cancel:
-        if st.button(f"Cancel {label}", key=f"cancel_{label}"):
-            CANCEL_FILE_OPTIMIZE_MULTI.parent.mkdir(parents=True, exist_ok=True)
-            CANCEL_FILE_OPTIMIZE_MULTI.write_text("cancel")
-            st.info("Cancellation requested; waiting for the current batch to stop.")
-    with col_refresh:
-        if st.button("Refresh progress", key=f"refresh_{label}"):
-            st.session_state[f"refresh_{label}"] = time.time()
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_OPTIMIZE_MULTI.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_OPTIMIZE_MULTI.write_text("cancel")
+        st.info("Cancellation requested; waiting for the current batch to stop.")
 
 class OptimizeMultiQueueItem():
     def __init__(self):
@@ -167,9 +154,8 @@ class OptimizeMultiQueueItem():
             cmd = [pbvenv(), '-u', PurePath(f'{pbdir()}/optimize_multi.py'), '-oc', str(PurePath(f'{self.hjson}'))]
             with open(self.log,"w") as log:
                 start_time = time.time()
-                total_steps = max(self.iters, 1) * max(len(self.symbols), 1)
-                expected_seconds = max(total_steps * 2, 1)
-                _write_progress_multi({"percent": 0, "status": "starting", "detail": self.name or self.filename, "eta": "...", "step": 0, "total": total_steps})
+                expected = max(self.iters, 1) * max(len(self.symbols), 1)
+                _write_progress_multi({"percent": 0, "status": "starting", "detail": self.name or self.filename, "eta": "..."})
                 if platform.system() == "Windows":
                     creationflags = subprocess.DETACHED_PROCESS
                     creationflags |= subprocess.CREATE_NO_WINDOW
@@ -180,22 +166,21 @@ class OptimizeMultiQueueItem():
                 self.save_pid()
                 while btm.poll() is None:
                     elapsed = time.time() - start_time
-                    percent = min(99, int((elapsed / expected_seconds) * 100))
-                    eta_seconds = max(expected_seconds - elapsed, 0)
+                    percent = min(99, int((elapsed / (expected * 2)) * 100))
+                    eta_seconds = max((expected * 2) - elapsed, 0)
                     eta = datetime.timedelta(seconds=int(eta_seconds))
-                    current_step = min(total_steps, int(total_steps * (percent / 100)))
-                    _write_progress_multi({"percent": percent, "status": "running", "detail": self.name or self.filename, "eta": str(eta), "step": current_step, "total": total_steps})
+                    _write_progress_multi({"percent": percent, "status": "running", "detail": self.name or self.filename, "eta": f"ETA {eta}"})
                     if CANCEL_FILE_OPTIMIZE_MULTI.exists():
                         btm.terminate()
-                        _write_progress_multi({"percent": percent, "status": "cancelling", "detail": self.name or self.filename, "eta": "", "step": current_step, "total": total_steps})
+                        _write_progress_multi({"percent": percent, "status": "cancelling", "detail": self.name or self.filename, "eta": ""})
                     time.sleep(1)
                 result = btm.poll()
             if CANCEL_FILE_OPTIMIZE_MULTI.exists():
                 CANCEL_FILE_OPTIMIZE_MULTI.unlink(missing_ok=True)
             if result == 0:
-                _write_progress_multi({"percent": 100, "status": "complete", "detail": self.name or self.filename, "eta": "", "step": total_steps, "total": total_steps})
+                _write_progress_multi({"percent": 100, "status": "complete", "detail": self.name or self.filename, "eta": ""})
             else:
-                _write_progress_multi({"percent": 0, "status": "stopped", "detail": self.name or self.filename, "eta": "", "step": 0, "total": total_steps})
+                _write_progress_multi({"percent": 0, "status": "stopped", "detail": self.name or self.filename, "eta": ""})
 
 class OptimizeMultiQueue:
     def __init__(self):

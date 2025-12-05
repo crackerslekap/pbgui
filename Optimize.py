@@ -29,9 +29,7 @@ CANCEL_FILE_OPTIMIZE = Path("data/cancel_optimize.flag")
 
 
 def _write_progress(payload: Dict[str, object], path: Path = PROGRESS_FILE_OPTIMIZE):
-    """Persist a structured progress payload that can be read by the UI."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload["updated"] = time.time()
     path.write_text(json.dumps(payload))
 
 
@@ -45,29 +43,16 @@ def _read_progress(path: Path = PROGRESS_FILE_OPTIMIZE) -> Dict[str, object]:
 
 
 def render_optimize_progress_ui(label: str = "Optimizer"):
-    """Inline progress panel with cancel support used on the Optimize page."""
     data = _read_progress()
     percent = int(data.get("percent", 0))
     status = data.get("status", "Idle")
     eta = data.get("eta", "")
     detail = data.get("detail", "")
-    step = data.get("step")
-    total = data.get("total")
-    info_text = f"{label}: {status}" + (f" • {detail}" if detail else "")
-    if step and total:
-        info_text += f" • {step}/{total}"
-    if eta:
-        info_text += f" • ETA {eta}"
-    st.progress(percent / 100 if percent <= 100 else 1.0, text=info_text)
-    col_cancel, col_refresh = st.columns([1, 1])
-    with col_cancel:
-        if st.button(f"Cancel {label}", key=f"cancel_{label}"):
-            CANCEL_FILE_OPTIMIZE.parent.mkdir(parents=True, exist_ok=True)
-            CANCEL_FILE_OPTIMIZE.write_text("cancel")
-            st.info("Cancel request sent; waiting for the current iteration to stop.")
-    with col_refresh:
-        if st.button("Refresh progress", key=f"refresh_{label}"):
-            st.session_state[f"refresh_{label}"] = time.time()
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_OPTIMIZE.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_OPTIMIZE.write_text("cancel")
+        st.info("Cancel request sent; waiting for the current iteration to stop.")
 
 class OptimizeItem(Base):
     BOOLS = ['n', 'y']
@@ -158,10 +143,9 @@ class OptimizeItem(Base):
             cmd.extend(['-oc', str(PurePath(f'{self.oc.config_file}')), '-bd', str(PurePath(f'{pbdir()}/backtests/pbgui'))])
             with open(self.log, "w") as log:
                 print(f'{datetime.datetime.now().isoformat(sep=" ", timespec="seconds")} Start: {cmd}')
-                total_steps = max(self.oc.iters, 1)
-                expected_seconds = max(total_steps * 2, 1)
+                expected = max(self.oc.iters, 1)
                 start_time = time.time()
-                _write_progress({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "...", "step": 0, "total": total_steps})
+                _write_progress({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "..."})
                 if platform.system() == "Windows":
                     creationflags = subprocess.CREATE_NO_WINDOW
                     process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
@@ -169,31 +153,23 @@ class OptimizeItem(Base):
                     process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True)
                 while process.poll() is None:
                     elapsed = time.time() - start_time
-                    percent = min(99, int((elapsed / expected_seconds) * 100))
-                    eta_seconds = max(expected_seconds - elapsed, 0)
+                    percent = min(99, int((elapsed / (expected * 2)) * 100))
+                    eta_seconds = max((expected * 2) - elapsed, 0)
                     eta = datetime.timedelta(seconds=int(eta_seconds))
-                    current_step = min(total_steps, int(total_steps * (percent / 100)))
-                    _write_progress({
-                        "percent": percent,
-                        "status": "running",
-                        "detail": self.symbol,
-                        "eta": str(eta),
-                        "step": current_step,
-                        "total": total_steps,
-                    })
+                    _write_progress({"percent": percent, "status": "running", "detail": self.symbol, "eta": f"ETA {eta}"})
                     if CANCEL_FILE_OPTIMIZE.exists():
                         process.terminate()
-                        _write_progress({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": "", "step": current_step, "total": total_steps})
+                        _write_progress({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": ""})
                     time.sleep(1)
                 result = process.poll()
             if CANCEL_FILE_OPTIMIZE.exists():
                 CANCEL_FILE_OPTIMIZE.unlink(missing_ok=True)
             if result == 0:
                 self.finish += 1
-                _write_progress({"percent": 100, "status": "complete", "detail": self.symbol, "eta": "", "step": total_steps, "total": total_steps})
+                _write_progress({"percent": 100, "status": "complete", "detail": self.symbol, "eta": ""})
                 self.save(self.position)
             else:
-                _write_progress({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": "", "step": 0, "total": total_steps})
+                _write_progress({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": ""})
             self.generate_backtest()
 
     def remove(self):

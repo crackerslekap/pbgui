@@ -30,7 +30,6 @@ CANCEL_FILE_BACKTEST = Path("data/cancel_backtest.flag")
 
 def _write_progress_backtest(payload: Dict[str, object], path: Path = PROGRESS_FILE_BACKTEST):
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload["updated"] = time.time()
     path.write_text(json.dumps(payload))
 
 
@@ -49,23 +48,11 @@ def render_backtest_progress_ui(label: str = "Backtest"):
     status = data.get("status", "Idle")
     eta = data.get("eta", "")
     detail = data.get("detail", "")
-    step = data.get("step")
-    total = data.get("total")
-    info_text = f"{label}: {status}" + (f" • {detail}" if detail else "")
-    if step and total:
-        info_text += f" • {step}/{total}"
-    if eta:
-        info_text += f" • ETA {eta}"
-    st.progress(percent / 100 if percent <= 100 else 1.0, text=info_text)
-    col_cancel, col_refresh = st.columns([1, 1])
-    with col_cancel:
-        if st.button(f"Cancel {label}", key=f"cancel_{label}"):
-            CANCEL_FILE_BACKTEST.parent.mkdir(parents=True, exist_ok=True)
-            CANCEL_FILE_BACKTEST.write_text("cancel")
-            st.info("Cancellation requested; waiting for the current symbol to stop.")
-    with col_refresh:
-        if st.button("Refresh progress", key=f"refresh_{label}"):
-            st.session_state[f"refresh_{label}"] = time.time()
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_BACKTEST.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_BACKTEST.write_text("cancel")
+        st.info("Cancellation requested; waiting for the current symbol to stop.")
 
 class BacktestItem(Base):
     def __init__(self, config: str = None):
@@ -349,9 +336,9 @@ class BacktestItem(Base):
             cmd.extend(shlex.split(cmd_end))
             cmd.extend(['-bd', PurePath(f'{pbdir()}/backtests/pbgui'), str(PurePath(f'{self._config.config_file}'))])
             with open(self.log,"w") as log:
-                expected_seconds = 1200
+                expected = 1200
                 start_time = time.time()
-                _write_progress_backtest({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "...", "step": 0, "total": expected_seconds})
+                _write_progress_backtest({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "..."})
                 if platform.system() == "Windows":
                     creationflags = subprocess.DETACHED_PROCESS
                     creationflags |= subprocess.CREATE_NO_WINDOW
@@ -360,22 +347,21 @@ class BacktestItem(Base):
                     process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, start_new_session=True)
                 while process.poll() is None:
                     elapsed = time.time() - start_time
-                    percent = min(99, int((elapsed / expected_seconds) * 100))
-                    eta_seconds = max(expected_seconds - elapsed, 0)
+                    percent = min(99, int((elapsed / expected) * 100))
+                    eta_seconds = max(expected - elapsed, 0)
                     eta = datetime.timedelta(seconds=int(eta_seconds))
-                    current_step = min(expected_seconds, int(elapsed))
-                    _write_progress_backtest({"percent": percent, "status": "running", "detail": self.symbol, "eta": str(eta), "step": current_step, "total": expected_seconds})
+                    _write_progress_backtest({"percent": percent, "status": "running", "detail": self.symbol, "eta": f"ETA {eta}"})
                     if CANCEL_FILE_BACKTEST.exists():
                         process.terminate()
-                        _write_progress_backtest({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": "", "step": current_step, "total": expected_seconds})
+                        _write_progress_backtest({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": ""})
                     time.sleep(1)
                 result = process.poll()
             if CANCEL_FILE_BACKTEST.exists():
                 CANCEL_FILE_BACKTEST.unlink(missing_ok=True)
             if result == 0:
-                _write_progress_backtest({"percent": 100, "status": "complete", "detail": self.symbol, "eta": "", "step": expected_seconds, "total": expected_seconds})
+                _write_progress_backtest({"percent": 100, "status": "complete", "detail": self.symbol, "eta": ""})
             else:
-                _write_progress_backtest({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": "", "step": 0, "total": expected_seconds})
+                _write_progress_backtest({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": ""})
 
 class BacktestQueue:
     def __init__(self):
