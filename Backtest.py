@@ -22,6 +22,37 @@ from shutil import rmtree
 import requests
 import datetime
 import logging
+from typing import Dict
+
+PROGRESS_FILE_BACKTEST = Path("data/progress_backtest.json")
+CANCEL_FILE_BACKTEST = Path("data/cancel_backtest.flag")
+
+
+def _write_progress_backtest(payload: Dict[str, object], path: Path = PROGRESS_FILE_BACKTEST):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+
+
+def _read_progress_backtest(path: Path = PROGRESS_FILE_BACKTEST) -> Dict[str, object]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def render_backtest_progress_ui(label: str = "Backtest"):
+    data = _read_progress_backtest()
+    percent = int(data.get("percent", 0))
+    status = data.get("status", "Idle")
+    eta = data.get("eta", "")
+    detail = data.get("detail", "")
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_BACKTEST.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_BACKTEST.write_text("cancel")
+        st.info("Cancellation requested; waiting for the current symbol to stop.")
 
 class BacktestItem(Base):
     def __init__(self, config: str = None):
@@ -48,6 +79,7 @@ class BacktestItem(Base):
         self.sb = 1000
 
     def import_pbconfigdb(self):
+        render_backtest_progress_ui()
         st.markdown('### Import from PassivBot Config Result DB by [Scud](%s)' % "https://pbconfigdb.scud.dedyn.io/")
         df = self.update_pbconfigdb()
         df = df[df['source'].str.contains('github')]
@@ -303,13 +335,33 @@ class BacktestItem(Base):
             cmd_end = f'-dp -u {self.user} -s {self.symbol} -sd {self.sd} -ed {self.ed} -sb {self.sb} -m {self.market_type}'
             cmd.extend(shlex.split(cmd_end))
             cmd.extend(['-bd', PurePath(f'{pbdir()}/backtests/pbgui'), str(PurePath(f'{self._config.config_file}'))])
-            log = open(self.log,"w")
-            if platform.system() == "Windows":
-                creationflags = subprocess.DETACHED_PROCESS
-                creationflags |= subprocess.CREATE_NO_WINDOW
-                subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
+            with open(self.log,"w") as log:
+                expected = 1200
+                start_time = time.time()
+                _write_progress_backtest({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "..."})
+                if platform.system() == "Windows":
+                    creationflags = subprocess.DETACHED_PROCESS
+                    creationflags |= subprocess.CREATE_NO_WINDOW
+                    process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
+                else:
+                    process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, start_new_session=True)
+                while process.poll() is None:
+                    elapsed = time.time() - start_time
+                    percent = min(99, int((elapsed / expected) * 100))
+                    eta_seconds = max(expected - elapsed, 0)
+                    eta = datetime.timedelta(seconds=int(eta_seconds))
+                    _write_progress_backtest({"percent": percent, "status": "running", "detail": self.symbol, "eta": f"ETA {eta}"})
+                    if CANCEL_FILE_BACKTEST.exists():
+                        process.terminate()
+                        _write_progress_backtest({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": ""})
+                    time.sleep(1)
+                result = process.poll()
+            if CANCEL_FILE_BACKTEST.exists():
+                CANCEL_FILE_BACKTEST.unlink(missing_ok=True)
+            if result == 0:
+                _write_progress_backtest({"percent": 100, "status": "complete", "detail": self.symbol, "eta": ""})
             else:
-                subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, start_new_session=True)
+                _write_progress_backtest({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": ""})
 
 class BacktestQueue:
     def __init__(self):

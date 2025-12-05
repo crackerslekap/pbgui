@@ -20,6 +20,37 @@ import datetime
 from MultiBounds import MultiBounds
 from BacktestMulti import BacktestMultiItem
 import logging
+from typing import Dict
+
+PROGRESS_FILE_OPTIMIZE_MULTI = Path("data/progress_optimize_multi.json")
+CANCEL_FILE_OPTIMIZE_MULTI = Path("data/cancel_optimize_multi.flag")
+
+
+def _write_progress_multi(payload: Dict[str, object], path: Path = PROGRESS_FILE_OPTIMIZE_MULTI):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+
+
+def _read_progress_multi(path: Path = PROGRESS_FILE_OPTIMIZE_MULTI) -> Dict[str, object]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def render_optimize_multi_progress(label: str = "Multi Optimize"):
+    data = _read_progress_multi()
+    percent = int(data.get("percent", 0))
+    status = data.get("status", "Idle")
+    eta = data.get("eta", "")
+    detail = data.get("detail", "")
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_OPTIMIZE_MULTI.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_OPTIMIZE_MULTI.write_text("cancel")
+        st.info("Cancellation requested; waiting for the current batch to stop.")
 
 class OptimizeMultiQueueItem():
     def __init__(self):
@@ -121,15 +152,35 @@ class OptimizeMultiQueueItem():
     def run(self):
         if not self.is_finish() and not self.is_running():
             cmd = [pbvenv(), '-u', PurePath(f'{pbdir()}/optimize_multi.py'), '-oc', str(PurePath(f'{self.hjson}'))]
-            log = open(self.log,"w")
-            if platform.system() == "Windows":
-                creationflags = subprocess.DETACHED_PROCESS
-                creationflags |= subprocess.CREATE_NO_WINDOW
-                btm = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
+            with open(self.log,"w") as log:
+                start_time = time.time()
+                expected = max(self.iters, 1) * max(len(self.symbols), 1)
+                _write_progress_multi({"percent": 0, "status": "starting", "detail": self.name or self.filename, "eta": "..."})
+                if platform.system() == "Windows":
+                    creationflags = subprocess.DETACHED_PROCESS
+                    creationflags |= subprocess.CREATE_NO_WINDOW
+                    btm = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
+                else:
+                    btm = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, start_new_session=True)
+                self.pid = btm.pid
+                self.save_pid()
+                while btm.poll() is None:
+                    elapsed = time.time() - start_time
+                    percent = min(99, int((elapsed / (expected * 2)) * 100))
+                    eta_seconds = max((expected * 2) - elapsed, 0)
+                    eta = datetime.timedelta(seconds=int(eta_seconds))
+                    _write_progress_multi({"percent": percent, "status": "running", "detail": self.name or self.filename, "eta": f"ETA {eta}"})
+                    if CANCEL_FILE_OPTIMIZE_MULTI.exists():
+                        btm.terminate()
+                        _write_progress_multi({"percent": percent, "status": "cancelling", "detail": self.name or self.filename, "eta": ""})
+                    time.sleep(1)
+                result = btm.poll()
+            if CANCEL_FILE_OPTIMIZE_MULTI.exists():
+                CANCEL_FILE_OPTIMIZE_MULTI.unlink(missing_ok=True)
+            if result == 0:
+                _write_progress_multi({"percent": 100, "status": "complete", "detail": self.name or self.filename, "eta": ""})
             else:
-                btm = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, start_new_session=True)
-            self.pid = btm.pid
-            self.save_pid()
+                _write_progress_multi({"percent": 0, "status": "stopped", "detail": self.name or self.filename, "eta": ""})
 
 class OptimizeMultiQueue:
     def __init__(self):
@@ -495,6 +546,7 @@ class OptimizeMultiItem:
 
     def edit(self):
         # Init session_state for keys
+        render_optimize_multi_progress()
         if "edit_opt_multi_exchange" in st.session_state:
             if st.session_state.edit_opt_multi_exchange != self.exchange:
                 self.exchange = st.session_state.edit_opt_multi_exchange

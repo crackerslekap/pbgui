@@ -21,6 +21,38 @@ import pbgui_help
 from time import sleep
 import traceback
 import logging
+from typing import Dict
+
+# Progress helpers
+PROGRESS_FILE_OPTIMIZE = Path("data/progress_optimize.json")
+CANCEL_FILE_OPTIMIZE = Path("data/cancel_optimize.flag")
+
+
+def _write_progress(payload: Dict[str, object], path: Path = PROGRESS_FILE_OPTIMIZE):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+
+
+def _read_progress(path: Path = PROGRESS_FILE_OPTIMIZE) -> Dict[str, object]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def render_optimize_progress_ui(label: str = "Optimizer"):
+    data = _read_progress()
+    percent = int(data.get("percent", 0))
+    status = data.get("status", "Idle")
+    eta = data.get("eta", "")
+    detail = data.get("detail", "")
+    st.progress(percent / 100 if percent <= 100 else 1.0, text=f"{label}: {status} {detail} {eta}")
+    if st.button(f"Cancel {label}", key=f"cancel_{label}"):
+        CANCEL_FILE_OPTIMIZE.parent.mkdir(parents=True, exist_ok=True)
+        CANCEL_FILE_OPTIMIZE.write_text("cancel")
+        st.info("Cancel request sent; waiting for the current iteration to stop.")
 
 class OptimizeItem(Base):
     BOOLS = ['n', 'y']
@@ -109,16 +141,35 @@ class OptimizeItem(Base):
             cmd_end = f'-u {self.user} -s {self.symbol} -i {self.oc.iters} -pm {self.oc.passivbot_mode} -a {self.oc.algorithm} -sd {self.sd} -ed {self.ed} -sb {self.sb} -m {self.market_type} -oh {self.ohlcv} -c {cpu} -le {self.BOOLS[self.oc.do_long]} -se {self.BOOLS[self.oc.do_short]}'
             cmd.extend(shlex.split(cmd_end))
             cmd.extend(['-oc', str(PurePath(f'{self.oc.config_file}')), '-bd', str(PurePath(f'{pbdir()}/backtests/pbgui'))])
-            log = open(self.log,"w")
-            print(f'{datetime.datetime.now().isoformat(sep=" ", timespec="seconds")} Start: {cmd}')
-            if platform.system() == "Windows":
-                creationflags = subprocess.CREATE_NO_WINDOW
-                result = subprocess.run(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
-            else:
-                result = subprocess.run(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True)
-            if result.returncode == 0:
-                self.finish +=1
+            with open(self.log, "w") as log:
+                print(f'{datetime.datetime.now().isoformat(sep=" ", timespec="seconds")} Start: {cmd}')
+                expected = max(self.oc.iters, 1)
+                start_time = time.time()
+                _write_progress({"percent": 0, "status": "starting", "detail": self.symbol, "eta": "..."})
+                if platform.system() == "Windows":
+                    creationflags = subprocess.CREATE_NO_WINDOW
+                    process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True, creationflags=creationflags)
+                else:
+                    process = subprocess.Popen(cmd, stdout=log, stderr=log, cwd=pbdir(), text=True)
+                while process.poll() is None:
+                    elapsed = time.time() - start_time
+                    percent = min(99, int((elapsed / (expected * 2)) * 100))
+                    eta_seconds = max((expected * 2) - elapsed, 0)
+                    eta = datetime.timedelta(seconds=int(eta_seconds))
+                    _write_progress({"percent": percent, "status": "running", "detail": self.symbol, "eta": f"ETA {eta}"})
+                    if CANCEL_FILE_OPTIMIZE.exists():
+                        process.terminate()
+                        _write_progress({"percent": percent, "status": "cancelling", "detail": self.symbol, "eta": ""})
+                    time.sleep(1)
+                result = process.poll()
+            if CANCEL_FILE_OPTIMIZE.exists():
+                CANCEL_FILE_OPTIMIZE.unlink(missing_ok=True)
+            if result == 0:
+                self.finish += 1
+                _write_progress({"percent": 100, "status": "complete", "detail": self.symbol, "eta": ""})
                 self.save(self.position)
+            else:
+                _write_progress({"percent": 0, "status": "stopped", "detail": self.symbol, "eta": ""})
             self.generate_backtest()
 
     def remove(self):
@@ -619,6 +670,7 @@ class OptimizeQueue:
 
     def options(self):
         # Options
+        render_optimize_progress_ui()
         col_run, col_mode, col_cpu, col_best = st.columns([1,1,1,1])
         with col_run:
             if "key_optimize_run" in st.session_state:
