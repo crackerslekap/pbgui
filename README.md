@@ -23,6 +23,8 @@ It has the following functions:
 - Installing and updating your VPS with just a few clicks.
 - And much more to easily manage Passivbot.
 
+If you want to contribute improvements or plan future work, see the [PBGUI Improvement Recommendations](docs/improvement-suggestions.md) for prioritized ideas across reliability, testing, UX, and performance.
+
 ### Requirements
 - Python 3.10
 - Streamlit 1.50.0
