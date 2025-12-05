@@ -249,7 +249,7 @@
 
     - name: clone pbgui repository
       git:
-        repo: https://github.com/msei99/pbgui.git
+        repo: https://github.com/crackerslekap/pbgui.git
         dest: "{{ install_dir }}/pbgui"
         version: main
         update: yes

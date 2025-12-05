@@ -76,7 +76,7 @@ Example:
 ssh root@<hostname>
 
 # Setup hostname and user. Disable root login
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/master_vps_init.sh) <hostname> <user>
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/master_vps_init.sh) <hostname> <user>
 ```
 
 Step 3: Connect as new user and Setup PBGui Master by running this commands
@@ -88,29 +88,29 @@ exit
 ssh <user>@<hostname>
 
 # Create swap
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_swap.sh) <size>
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_swap.sh) <size>
 
 #  Setup openvpn
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_openvpn.sh)
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_openvpn.sh)
 
 # Setup google-authenticator and add QR code to your TOTP App
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_totp.sh)
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_totp.sh)
 cat /home/mani/GA-QR.txt
 
 # Setup Firewall
 The Firewall Setup can be run in 3 ways.
 1. Default — allow SSH from everywhere (low secure)
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_firewall.sh)
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_firewall.sh)
 2. VPN-only SSH access (high secure)
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_firewall.sh) -i
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_firewall.sh) -i
 3. Specific IPs + VPN
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_firewall.sh) -i 1.2.3.4,1.2.3.5
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_firewall.sh) -i 1.2.3.4,1.2.3.5
 
 # Setup PBGui
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/install.sh)
 
 # Setup crontab for autostart
-bash <(curl -sL https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/setup/setup_autostart.sh)
+bash <(curl -sL https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/setup/setup_autostart.sh)
 ```
 
 Step 5: Setup OpenVPN Client
@@ -134,14 +134,14 @@ Step 7: Connect to PBGui
 
 There is a install.sh for Ubuntu. Working on Ubunt24.04
 ```
-curl -L https://raw.githubusercontent.com/msei99/pbgui/refs/heads/main/install.sh | bash
+curl -L https://raw.githubusercontent.com/crackerslekap/pbgui/refs/heads/main/install.sh | bash
 ```
 
 ### Manual Installation for all Linux distributions
 
 Clone pbgui and passivbot v6 and v7
 ```
-git clone https://github.com/msei99/pbgui.git
+git clone https://github.com/crackerslekap/pbgui.git
 git clone https://github.com/enarjord/passivbot.git's
 ```
 python3.10 -m venv venv_pbgui
