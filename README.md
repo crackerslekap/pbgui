@@ -23,6 +23,16 @@ It has the following functions:
 - Installing and updating your VPS with just a few clicks.
 - And much more to easily manage Passivbot.
 
+If you want to contribute improvements or plan future work, see the [PBGUI Improvement Recommendations](docs/improvement-suggestions.md) for prioritized ideas across reliability, testing, UX, and performance.
+
+### Health checks
+Run the lightweight health check CLI to confirm the database is reachable and PBGUI daemons are alive:
+
+```
+python health_check.py            # runs all checks and exits non-zero on failures
+python health_check.py --skip-services  # useful when services are not expected to be running locally
+```
+
 ### Requirements
 - Python 3.10
 - Streamlit 1.50.0
