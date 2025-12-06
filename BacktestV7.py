@@ -27,6 +27,7 @@ import datetime
 import logging
 import os
 import fnmatch
+import re
 
 class BacktestV7QueueItem():
     def __init__(self):
@@ -39,6 +40,8 @@ class BacktestV7QueueItem():
         self.pid = None
         self.pidfile = None
         self.config = ConfigV7()
+        self._progress_history = []  # List of (timestamp, progress_value) tuples
+        self._start_time = None
 
     def remove(self):
         self.stop()
@@ -132,6 +135,199 @@ class BacktestV7QueueItem():
                     return True
             else:
                 return False
+        return False
+
+    def is_fetching(self):
+        """Check if currently fetching/downloading data"""
+        if self.is_running() and not self.is_backtesting() and not self.is_finish():
+            log = self.load_log(log_size=500)
+            if log:
+                # Look for fetching/downloading indicators
+                fetch_indicators = [
+                    "downloading", "fetching", "Download", "Fetch",
+                    "loading data", "preparing data", "initializing",
+                    "loading ohlcv", "downloading ohlcv"
+                ]
+                log_lower = log.lower()
+                if any(ind.lower() in log_lower for ind in fetch_indicators):
+                    # Check if backtest hasn't started yet
+                    if "Starting backtest..." not in log and "Plotting fills" not in log:
+                        return True
+            # If running but not backtesting and no finish, likely fetching
+            return True
+        return False
+
+    def _extract_backtest_progress(self, log: str | None) -> float | None:
+        """Extract backtest progress from log patterns"""
+        if not log:
+            return None
+        
+        # Look for time-based progress indicators
+        # Patterns like "processed 2024-01-01" or "2024-01-01 12:00:00"
+        # Try to extract date range progress
+        date_patterns = [
+            r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
+        ]
+        
+        dates_found = []
+        for line in log.splitlines()[-200:]:
+            for pattern in date_patterns:
+                matches = re.findall(pattern, line)
+                dates_found.extend(matches)
+        
+        if dates_found and self.config and hasattr(self.config, 'backtest'):
+            try:
+                # Try to get date range from config
+                start_date = getattr(self.config.backtest, 'start_date', None)
+                end_date = getattr(self.config.backtest, 'end_date', None)
+                
+                if start_date and end_date:
+                    from datetime import datetime
+                    try:
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d') if isinstance(start_date, str) else start_date
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d') if isinstance(end_date, str) else end_date
+                        
+                        if dates_found:
+                            # Get the latest date processed
+                            latest_date_str = dates_found[-1]
+                            latest_dt = datetime.strptime(latest_date_str, '%Y-%m-%d')
+                            
+                            total_days = (end_dt - start_dt).days
+                            processed_days = (latest_dt - start_dt).days
+                            
+                            if total_days > 0:
+                                pct = min((processed_days / total_days) * 100, 100)
+                                return pct
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Look for percentage indicators
+        return self._extract_progress_percent(log)
+
+    def _extract_progress_percent(self, log: str | None) -> float | None:
+        if not log:
+            return None
+        for line in reversed(log.splitlines()[-40:]):
+            match = re.search(r'(\d{1,3})(?:\.\d+)?\s*%', line)
+            if match:
+                pct = float(match.group(1))
+                if 0 <= pct <= 100:
+                    return pct
+        return None
+
+    def _calculate_eta(self, current_progress: float, progress_rate: float | None) -> str | None:
+        """Calculate ETA based on progress rate"""
+        if progress_rate is None or progress_rate <= 0:
+            return None
+        
+        remaining = 100 - current_progress
+        if remaining <= 0:
+            return "Complete"
+        
+        seconds_remaining = remaining / progress_rate
+        if seconds_remaining < 60:
+            return f"{int(seconds_remaining)}s"
+        elif seconds_remaining < 3600:
+            minutes = int(seconds_remaining / 60)
+            return f"{minutes}m"
+        else:
+            hours = int(seconds_remaining / 3600)
+            minutes = int((seconds_remaining % 3600) / 60)
+            return f"{hours}h {minutes}m"
+
+    def progress(self):
+        """Returns (progress_value, label, stage, eta)"""
+        current_time = time.time()
+        
+        # Initialize start time if not set and process is running
+        if self._start_time is None and self.is_running():
+            self._start_time = current_time
+        
+        log = self.load_log(log_size=500)
+        
+        # Determine stage
+        if self.is_finish():
+            stage = "complete"
+            progress_pct = 100.0
+            label = "Complete"
+            eta = None
+        elif self.is_fetching():
+            stage = "fetching"
+            # Estimate fetching progress based on time (rough estimate)
+            if self._start_time:
+                elapsed = current_time - self._start_time
+                # Assume fetching takes 5-20% of total time, estimate progress
+                progress_pct = min(elapsed / 600 * 15, 20)  # Max 20% for fetching
+            else:
+                progress_pct = 5.0
+            label = "Fetching data..."
+            eta = None  # Hard to estimate fetching time
+        elif self.is_backtesting():
+            stage = "backtesting"
+            # Try to extract backtest progress
+            progress_pct = self._extract_backtest_progress(log)
+            if progress_pct is None:
+                # Fallback: estimate based on time if we have start time
+                if self._start_time:
+                    elapsed = current_time - self._start_time
+                    # Assume backtesting takes 20-95% of total time
+                    progress_pct = min(20 + (elapsed / 3600 * 75), 95)
+                else:
+                    progress_pct = 50.0
+            label = "Backtesting..."
+            
+            # Calculate ETA based on progress rate
+            if len(self._progress_history) >= 2:
+                recent = self._progress_history[-5:]
+                if len(recent) >= 2:
+                    time_diff = recent[-1][0] - recent[0][0]
+                    progress_diff = recent[-1][1] - recent[0][1]
+                    if time_diff > 0 and progress_diff > 0:
+                        rate = progress_diff / time_diff  # % per second
+                        eta = self._calculate_eta(progress_pct, rate)
+                    else:
+                        eta = None
+                else:
+                    eta = None
+            else:
+                eta = None
+        elif self.is_running():
+            stage = "starting"
+            progress_pct = 10.0
+            label = "Starting..."
+            eta = None
+        elif self.is_error():
+            stage = "error"
+            progress_pct = 0.0
+            label = "Error"
+            eta = None
+        else:
+            stage = "queued"
+            progress_pct = 0.0
+            label = "Queued"
+            eta = None
+        
+        # Update progress history for rate calculation
+        if self.is_running() and progress_pct > 0:
+            self._progress_history.append((current_time, progress_pct))
+            # Keep only last 20 entries
+            if len(self._progress_history) > 20:
+                self._progress_history = self._progress_history[-20:]
+        
+        # Reset start time if process stopped
+        if not self.is_running() and self._start_time:
+            self._start_time = None
+            self._progress_history = []
+        
+        progress_value = min(progress_pct, 100) / 100
+        
+        # Format label with ETA if available
+        if eta:
+            label = f"{label} (ETA: {eta})"
+        
+        return progress_value, label, stage
 
     def stop(self):
         if self.is_running():
@@ -426,6 +622,29 @@ class BacktestV7Queue:
         for item in self.items:
             if item.log_show:
                 item.view_log()
+        active = [item for item in self.items if item.is_running() or not item.is_finish()]
+        if active:
+            st.markdown("#### Progress")
+            for item in active:
+                value, label, stage = item.progress()
+                name = item.name or item.filename
+                
+                # Show stage-specific progress bars
+                if stage == "fetching":
+                    st.progress(value)
+                    st.caption(f"📥 {name}: {label}")
+                elif stage == "backtesting":
+                    st.progress(value)
+                    st.caption(f"📊 {name}: {label}")
+                elif stage == "complete":
+                    st.progress(value)
+                    st.caption(f"✅ {name}: {label}")
+                elif stage == "error":
+                    st.progress(value)
+                    st.caption(f"❌ {name}: {label}")
+                else:
+                    st.progress(value)
+                    st.caption(f"{name}: {label}")
 
     def load_sort_queue(self):
         pb_config = configparser.ConfigParser()
@@ -542,6 +761,61 @@ class BacktestV7Item:
             st.session_state.edit_bt_v7_starting_balance = float(self.config.backtest.starting_balance)
         st.number_input("starting_balance", step=500.0, key="edit_bt_v7_starting_balance")
 
+    # balance_sample_divider
+    @st.fragment
+    def fragment_balance_sample_divider(self):
+        if "edit_bt_v7_balance_sample_divider" in st.session_state:
+            if st.session_state.edit_bt_v7_balance_sample_divider != self.config.backtest.balance_sample_divider:
+                self.config.backtest.balance_sample_divider = st.session_state.edit_bt_v7_balance_sample_divider
+        else:
+            st.session_state.edit_bt_v7_balance_sample_divider = int(self.config.backtest.balance_sample_divider)
+        st.number_input("balance_sample_divider", min_value=1, step=1, format="%.0f", key="edit_bt_v7_balance_sample_divider", help=pbgui_help.balance_sample_divider)
+
+    # btc_collateral_cap
+    @st.fragment
+    def fragment_btc_collateral_cap(self):
+        if "edit_bt_v7_btc_collateral_cap" in st.session_state:
+            if st.session_state.edit_bt_v7_btc_collateral_cap != self.config.backtest.btc_collateral_cap:
+                self.config.backtest.btc_collateral_cap = st.session_state.edit_bt_v7_btc_collateral_cap
+        else:
+            st.session_state.edit_bt_v7_btc_collateral_cap = float(self.config.backtest.btc_collateral_cap)
+        st.number_input("btc_collateral_cap", min_value=0.0, max_value=1.0, step=0.01, format="%.4f", key="edit_bt_v7_btc_collateral_cap", help=pbgui_help.btc_collateral_cap)
+
+    # btc_collateral_ltv_cap
+    @st.fragment
+    def fragment_btc_collateral_ltv_cap(self):
+        current = "" if self.config.backtest.btc_collateral_ltv_cap is None else str(self.config.backtest.btc_collateral_ltv_cap)
+        if "edit_bt_v7_btc_collateral_ltv_cap" not in st.session_state:
+            st.session_state.edit_bt_v7_btc_collateral_ltv_cap = current
+        if st.session_state.edit_bt_v7_btc_collateral_ltv_cap != current:
+            text_value = st.session_state.edit_bt_v7_btc_collateral_ltv_cap.strip()
+            if text_value == "":
+                self.config.backtest.btc_collateral_ltv_cap = None
+            else:
+                try:
+                    self.config.backtest.btc_collateral_ltv_cap = float(text_value)
+                except Exception:
+                    error_popup("Invalid btc_collateral_ltv_cap; leave empty or enter a number.")
+                    st.session_state.edit_bt_v7_btc_collateral_ltv_cap = current
+        st.text_input("btc_collateral_ltv_cap (empty for None)", key="edit_bt_v7_btc_collateral_ltv_cap", help=pbgui_help.btc_collateral_ltv_cap)
+
+    # filter_by_min_effective_cost
+    @st.fragment
+    def fragment_filter_by_min_effective_cost_bt(self):
+        options = {
+            "auto (passivbot default)": None,
+            "true": True,
+            "false": False
+        }
+        current_value = self.config.backtest.filter_by_min_effective_cost
+        if "edit_bt_v7_filter_by_min_effective_cost" not in st.session_state:
+            st.session_state.edit_bt_v7_filter_by_min_effective_cost = next(
+                (label for label, value in options.items() if value == current_value),
+                "auto (passivbot default)"
+            )
+        selection = st.selectbox("filter_by_min_effective_cost", options.keys(), key="edit_bt_v7_filter_by_min_effective_cost", help=pbgui_help.filter_by_min_effective_cost_backtest)
+        self.config.backtest.filter_by_min_effective_cost = options.get(selection)
+
     # minimum_coin_aga_days
     @st.fragment
     def fragment_minimum_coin_age_days(self):
@@ -591,16 +865,6 @@ class BacktestV7Item:
         else:
             st.session_state.edit_bt_v7_compress_cache = self.config.backtest.compress_cache
         st.checkbox("compress_cache", key="edit_bt_v7_compress_cache", help=pbgui_help.compress_cache)
-    
-    # use_btc_collateral
-    @st.fragment
-    def fragment_use_btc_collateral(self):
-        if "edit_bt_v7_use_btc_collateral" in st.session_state:
-            if st.session_state.edit_bt_v7_use_btc_collateral != self.config.backtest.use_btc_collateral:
-                self.config.backtest.use_btc_collateral = st.session_state.edit_bt_v7_use_btc_collateral
-        else:
-            st.session_state.edit_bt_v7_use_btc_collateral = self.config.backtest.use_btc_collateral
-        st.checkbox("use_btc_collateral", key="edit_bt_v7_use_btc_collateral", help=pbgui_help.use_btc_collateral)
 
     # filters
     def fragment_filter_coins(self):
@@ -832,20 +1096,28 @@ class BacktestV7Item:
             self.fragment_div_by()
         with col6:
             self.fragment_logging()
-        col1, col2, col3, col4, col5, col6 = st.columns([1,1,0.5,0.5,0.5,0.5])
+        col1, col2, col3, col4, col5, col6 = st.columns([1,1,1,1,1,1])
         with col1:
             self.fragment_starting_balance()
         with col2:
-            self.fragment_minimum_coin_age_days()
+            self.fragment_balance_sample_divider()
         with col3:
-            self.fragment_gap_tolerance_ohlcvs_minutes()
+            self.fragment_btc_collateral_cap()
         with col4:
-            self.fragment_max_warmup_minutes()
+            self.fragment_btc_collateral_ltv_cap()
         with col5:
-            self.fragment_combine_ohlcvs()
-            self.fragment_compress_cache()
+            self.fragment_filter_by_min_effective_cost_bt()
         with col6:
-            self.fragment_use_btc_collateral()
+            self.fragment_gap_tolerance_ohlcvs_minutes()
+        col1, col2, col3, col4 = st.columns([1,1,1,1])
+        with col1:
+            self.fragment_minimum_coin_age_days()
+        with col2:
+            self.fragment_max_warmup_minutes()
+        with col3:
+            self.fragment_combine_ohlcvs()
+        with col4:
+            self.fragment_compress_cache()
         #Filters
         self.fragment_filter_coins()
         # coin_overrides

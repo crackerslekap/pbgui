@@ -289,6 +289,12 @@ Copy the start.bat.example to start.bat
 Edit pbguipath in the start.bat to your pbgui installation path
 Add start.bat to Windows Task Scheduler and use Trigger "At system startup"
 
+## v1.38 (06-12-2025)
+- Compatible with passivbot 7.5.8
+- Added backtest BTC collateral caps and balance sampling controls
+- Added live balance override, hysteresis snap, recv_window and order match tolerance inputs
+- Updated defaults to match passivbot 7.5.x template
+
 ## v1.37 (19-10-2025)
 - Compatible with passivbot 7.4.1
 - Resize swap size on vps

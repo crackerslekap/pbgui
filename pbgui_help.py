@@ -598,6 +598,43 @@ execution_delay_seconds = """
     wait x seconds after executing to exchange
     delay between executions to exchange. Set to 60 to simulate 1m ohlcv backtest.
     ```"""
+balance_sample_divider = """
+    ```
+    Frequency divider used when sampling balance during backtests.
+    Higher numbers produce fewer balance samples and smaller result files.
+    ```"""
+btc_collateral_cap = """
+    ```
+    Fraction of the portfolio that can be allocated as BTC collateral when backtesting.
+    Set to 0.0 to disable BTC collateral entirely.
+    ```"""
+btc_collateral_ltv_cap = """
+    ```
+    Optional loan-to-value ceiling applied to BTC collateral; leave empty for no cap.
+    ```"""
+balance_override = """
+    ```
+    Force the bot to use a fixed balance value instead of fetching it from the exchange.
+    Leave empty to keep live balance updates.
+    ```"""
+balance_hysteresis_snap_pct = """
+    ```
+    Threshold for re-syncing cached balance to the fetched balance to reduce noise.
+    Set to 0 to disable hysteresis.
+    ```"""
+order_match_tolerance_pct = """
+    ```
+    Allowed relative difference between expected and fetched orders before treating them as mismatched.
+    ```"""
+recv_window_ms = """
+    ```
+    Exchange receive window in milliseconds applied to signed HTTP requests.
+    ```"""
+filter_by_min_effective_cost_backtest = """
+    ```
+    If enabled, backtests skip coins whose minimum effective order cost exceeds the configured exposure.
+    Choose auto to rely on passivbot defaults.
+    ```"""
 
 price_distance_threshold = """
     ```

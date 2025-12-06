@@ -484,10 +484,14 @@ class Backtest:
         self._combine_ohlcvs = True
         self._compress_cache = True
         self._end_date = "now"
-        self._exchanges = ["binance", "bybit"]
+        self._exchanges = ["binance", "bybit", "gateio", "bitget"]
         self._gap_tolerance_ohlcvs_minutes = 120.0
-        self._start_date = "2020-01-01"
-        self._starting_balance = 1000.0
+        self._start_date = "2021-04-01"
+        self._starting_balance = 100000.0
+        self._balance_sample_divider = 60
+        self._btc_collateral_cap = 1.0
+        self._btc_collateral_ltv_cap = None
+        self._filter_by_min_effective_cost = None
         self._use_btc_collateral = False
         self._max_warmup_minutes = 0.0
         self._backtest = {
@@ -499,6 +503,10 @@ class Backtest:
             "gap_tolerance_ohlcvs_minutes": self._gap_tolerance_ohlcvs_minutes,
             "start_date": self._start_date,
             "starting_balance": self._starting_balance,
+            "balance_sample_divider": self._balance_sample_divider,
+            "btc_collateral_cap": self._btc_collateral_cap,
+            "btc_collateral_ltv_cap": self._btc_collateral_ltv_cap,
+            "filter_by_min_effective_cost": self._filter_by_min_effective_cost,
             "use_btc_collateral": self._use_btc_collateral,
             "max_warmup_minutes": self._max_warmup_minutes
         }
@@ -526,6 +534,14 @@ class Backtest:
             self.start_date = new_backtest["start_date"]
         if "starting_balance" in new_backtest:
             self.starting_balance = new_backtest["starting_balance"]
+        if "balance_sample_divider" in new_backtest:
+            self.balance_sample_divider = new_backtest["balance_sample_divider"]
+        if "btc_collateral_cap" in new_backtest:
+            self.btc_collateral_cap = new_backtest["btc_collateral_cap"]
+        if "btc_collateral_ltv_cap" in new_backtest:
+            self.btc_collateral_ltv_cap = new_backtest["btc_collateral_ltv_cap"]
+        if "filter_by_min_effective_cost" in new_backtest:
+            self.filter_by_min_effective_cost = new_backtest["filter_by_min_effective_cost"]
         if "use_btc_collateral" in new_backtest:
             self.use_btc_collateral = new_backtest["use_btc_collateral"]
         if "max_warmup_minutes" in new_backtest:
@@ -550,6 +566,14 @@ class Backtest:
     def start_date(self): return self._start_date
     @property
     def starting_balance(self): return self._starting_balance
+    @property
+    def balance_sample_divider(self): return self._balance_sample_divider
+    @property
+    def btc_collateral_cap(self): return self._btc_collateral_cap
+    @property
+    def btc_collateral_ltv_cap(self): return self._btc_collateral_ltv_cap
+    @property
+    def filter_by_min_effective_cost(self): return self._filter_by_min_effective_cost
     @property
     def use_btc_collateral(self): return self._use_btc_collateral
     @property
@@ -587,10 +611,28 @@ class Backtest:
     def starting_balance(self, new_starting_balance):
         self._starting_balance = new_starting_balance
         self._backtest["starting_balance"] = self._starting_balance
+    @balance_sample_divider.setter
+    def balance_sample_divider(self, new_balance_sample_divider):
+        self._balance_sample_divider = int(new_balance_sample_divider)
+        self._backtest["balance_sample_divider"] = self._balance_sample_divider
+    @btc_collateral_cap.setter
+    def btc_collateral_cap(self, new_btc_collateral_cap):
+        self._btc_collateral_cap = 0.0 if new_btc_collateral_cap is None else float(new_btc_collateral_cap)
+        self._backtest["btc_collateral_cap"] = self._btc_collateral_cap
+    @btc_collateral_ltv_cap.setter
+    def btc_collateral_ltv_cap(self, new_btc_collateral_ltv_cap):
+        self._btc_collateral_ltv_cap = None if new_btc_collateral_ltv_cap is None else float(new_btc_collateral_ltv_cap)
+        self._backtest["btc_collateral_ltv_cap"] = self._btc_collateral_ltv_cap
+    @filter_by_min_effective_cost.setter
+    def filter_by_min_effective_cost(self, new_filter_by_min_effective_cost):
+        self._filter_by_min_effective_cost = new_filter_by_min_effective_cost
+        self._backtest["filter_by_min_effective_cost"] = self._filter_by_min_effective_cost
     @use_btc_collateral.setter
     def use_btc_collateral(self, new_use_btc_collateral):
         self._use_btc_collateral = new_use_btc_collateral
+        self._btc_collateral_cap = 1.0 if self._use_btc_collateral else 0.0
         self._backtest["use_btc_collateral"] = self._use_btc_collateral
+        self._backtest["btc_collateral_cap"] = self._btc_collateral_cap
     @max_warmup_minutes.setter
     def max_warmup_minutes(self, new_max_warmup_minutes):
         self._max_warmup_minutes = new_max_warmup_minutes
@@ -1579,16 +1621,21 @@ class Live:
         self._leverage = 10.0
         self._market_orders_allowed = True
         self._max_disk_candles_per_symbol_per_tf = 2000000
-        self._max_memory_candles_per_symbol = 20000
+        self._max_memory_candles_per_symbol = 200000
         self._max_n_cancellations_per_batch = 5
         self._max_n_creations_per_batch = 3
         self._max_n_restarts_per_day = 10
-        self._minimum_coin_age_days = 30.0
+        self._minimum_coin_age_days = 7.0
         self._pnls_max_lookback_days = 30.0
         self._price_distance_threshold = 0.002
+        self._order_match_tolerance_pct = 0.0002
+        self._recv_window_ms = 5000
+        self._max_warmup_minutes = 0.0
         self._time_in_force = "good_till_cancelled"
         self._warmup_ratio = 0.2
         self._user = "bybit_01"
+        self._balance_override = None
+        self._balance_hysteresis_snap_pct = 0.02
 
         self._live = {
             "approved_coins": self._approved_coins._approved_coins,
@@ -1610,9 +1657,14 @@ class Live:
             "minimum_coin_age_days": self._minimum_coin_age_days,
             "pnls_max_lookback_days": self._pnls_max_lookback_days,
             "price_distance_threshold": self._price_distance_threshold,
+            "order_match_tolerance_pct": self._order_match_tolerance_pct,
+            "recv_window_ms": self._recv_window_ms,
+            "max_warmup_minutes": self._max_warmup_minutes,
             "time_in_force": self._time_in_force,
             "warmup_ratio": self._warmup_ratio,
-            "user": self._user
+            "user": self._user,
+            "balance_override": self._balance_override,
+            "balance_hysteresis_snap_pct": self._balance_hysteresis_snap_pct
         }
     
     def __repr__(self):
@@ -1660,12 +1712,22 @@ class Live:
             self.pnls_max_lookback_days = new_live["pnls_max_lookback_days"]
         if "price_distance_threshold" in new_live:
             self.price_distance_threshold = new_live["price_distance_threshold"]
+        if "order_match_tolerance_pct" in new_live:
+            self.order_match_tolerance_pct = new_live["order_match_tolerance_pct"]
+        if "recv_window_ms" in new_live:
+            self.recv_window_ms = new_live["recv_window_ms"]
+        if "max_warmup_minutes" in new_live:
+            self.max_warmup_minutes = new_live["max_warmup_minutes"]
         if "time_in_force" in new_live:
             self.time_in_force = new_live["time_in_force"]
         if "warmup_ratio" in new_live:
             self._warmup_ratio = new_live["warmup_ratio"]
         if "user" in new_live:
             self.user = new_live["user"]
+        if "balance_override" in new_live:
+            self.balance_override = new_live["balance_override"]
+        if "balance_hysteresis_snap_pct" in new_live:
+            self.balance_hysteresis_snap_pct = new_live["balance_hysteresis_snap_pct"]
     
     @property
     def approved_coins(self): return self._approved_coins
@@ -1706,11 +1768,21 @@ class Live:
     @property
     def price_distance_threshold(self): return self._price_distance_threshold
     @property
+    def order_match_tolerance_pct(self): return self._order_match_tolerance_pct
+    @property
+    def recv_window_ms(self): return self._recv_window_ms
+    @property
+    def max_warmup_minutes(self): return self._max_warmup_minutes
+    @property
     def time_in_force(self): return self._time_in_force
     @property
     def warmup_ratio(self): return self._warmup_ratio
     @property
     def user(self): return self._user
+    @property
+    def balance_override(self): return self._balance_override
+    @property
+    def balance_hysteresis_snap_pct(self): return self._balance_hysteresis_snap_pct
 
     @approved_coins.setter
     def approved_coins(self, new_approved_coins):
@@ -1788,6 +1860,18 @@ class Live:
     def price_distance_threshold(self, new_price_distance_threshold):
         self._price_distance_threshold = new_price_distance_threshold
         self._live["price_distance_threshold"] = self._price_distance_threshold
+    @order_match_tolerance_pct.setter
+    def order_match_tolerance_pct(self, new_order_match_tolerance_pct):
+        self._order_match_tolerance_pct = new_order_match_tolerance_pct
+        self._live["order_match_tolerance_pct"] = self._order_match_tolerance_pct
+    @recv_window_ms.setter
+    def recv_window_ms(self, new_recv_window_ms):
+        self._recv_window_ms = int(new_recv_window_ms)
+        self._live["recv_window_ms"] = self._recv_window_ms
+    @max_warmup_minutes.setter
+    def max_warmup_minutes(self, new_max_warmup_minutes):
+        self._max_warmup_minutes = new_max_warmup_minutes
+        self._live["max_warmup_minutes"] = self._max_warmup_minutes
     @time_in_force.setter
     def time_in_force(self, new_time_in_force):
         self._time_in_force = new_time_in_force
@@ -1800,6 +1884,14 @@ class Live:
     def user(self, new_user):
         self._user = new_user
         self._live["user"] = self._user
+    @balance_override.setter
+    def balance_override(self, new_balance_override):
+        self._balance_override = new_balance_override
+        self._live["balance_override"] = self._balance_override
+    @balance_hysteresis_snap_pct.setter
+    def balance_hysteresis_snap_pct(self, new_balance_hysteresis_snap_pct):
+        self._balance_hysteresis_snap_pct = new_balance_hysteresis_snap_pct
+        self._live["balance_hysteresis_snap_pct"] = self._balance_hysteresis_snap_pct
 
 class Optimize:
     def __init__(self):

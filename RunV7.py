@@ -203,6 +203,59 @@ class V7Instance():
         st.number_input("execution_delay_seconds", min_value=1.0, max_value=60.0, step=1.0, format="%.1f", key="edit_run_v7_execution_delay_seconds", help=pbgui_help.execution_delay_seconds)
 
     @st.fragment
+    def fragment_order_match_tolerance_pct(self):
+        if "edit_run_v7_order_match_tolerance_pct" in st.session_state:
+            if st.session_state.edit_run_v7_order_match_tolerance_pct != self.config.live.order_match_tolerance_pct:
+                self.config.live.order_match_tolerance_pct = st.session_state.edit_run_v7_order_match_tolerance_pct
+        else:
+            st.session_state.edit_run_v7_order_match_tolerance_pct = float(self.config.live.order_match_tolerance_pct)
+        st.number_input("order_match_tolerance_pct", min_value=0.0, max_value=0.01, step=0.0001, format="%.6f", key="edit_run_v7_order_match_tolerance_pct", help=pbgui_help.order_match_tolerance_pct)
+
+    @st.fragment
+    def fragment_recv_window_ms(self):
+        if "edit_run_v7_recv_window_ms" in st.session_state:
+            if st.session_state.edit_run_v7_recv_window_ms != self.config.live.recv_window_ms:
+                self.config.live.recv_window_ms = st.session_state.edit_run_v7_recv_window_ms
+        else:
+            st.session_state.edit_run_v7_recv_window_ms = int(self.config.live.recv_window_ms)
+        st.number_input("recv_window_ms", min_value=0, step=100, format="%d", key="edit_run_v7_recv_window_ms", help=pbgui_help.recv_window_ms)
+
+    @st.fragment
+    def fragment_live_max_warmup_minutes(self):
+        if "edit_run_v7_live_max_warmup_minutes" in st.session_state:
+            if st.session_state.edit_run_v7_live_max_warmup_minutes != self.config.live.max_warmup_minutes:
+                self.config.live.max_warmup_minutes = st.session_state.edit_run_v7_live_max_warmup_minutes
+        else:
+            st.session_state.edit_run_v7_live_max_warmup_minutes = float(self.config.live.max_warmup_minutes)
+        st.number_input("max_warmup_minutes", min_value=0.0, step=60.0, format="%.1f", key="edit_run_v7_live_max_warmup_minutes", help=pbgui_help.max_warmup_minutes)
+
+    @st.fragment
+    def fragment_balance_override(self):
+        current = "" if self.config.live.balance_override is None else str(self.config.live.balance_override)
+        if "edit_run_v7_balance_override" not in st.session_state:
+            st.session_state.edit_run_v7_balance_override = current
+        if st.session_state.edit_run_v7_balance_override != current:
+            text_value = st.session_state.edit_run_v7_balance_override.strip()
+            if text_value == "":
+                self.config.live.balance_override = None
+            else:
+                try:
+                    self.config.live.balance_override = float(text_value)
+                except Exception:
+                    error_popup("Invalid balance_override; leave empty or enter a number.")
+                    st.session_state.edit_run_v7_balance_override = current
+        st.text_input("balance_override (empty for None)", key="edit_run_v7_balance_override", help=pbgui_help.balance_override)
+
+    @st.fragment
+    def fragment_balance_hysteresis_snap_pct(self):
+        if "edit_run_v7_balance_hysteresis_snap_pct" in st.session_state:
+            if st.session_state.edit_run_v7_balance_hysteresis_snap_pct != self.config.live.balance_hysteresis_snap_pct:
+                self.config.live.balance_hysteresis_snap_pct = st.session_state.edit_run_v7_balance_hysteresis_snap_pct
+        else:
+            st.session_state.edit_run_v7_balance_hysteresis_snap_pct = float(self.config.live.balance_hysteresis_snap_pct)
+        st.number_input("balance_hysteresis_snap_pct", min_value=0.0, max_value=1.0, step=0.001, format="%.4f", key="edit_run_v7_balance_hysteresis_snap_pct", help=pbgui_help.balance_hysteresis_snap_pct)
+
+    @st.fragment
     def fragment_filter_by_min_effective_cost(self):
         if "edit_run_v7_filter_by_min_effective_cost" in st.session_state:
             if st.session_state.edit_run_v7_filter_by_min_effective_cost != self.config.live.filter_by_min_effective_cost:
@@ -548,6 +601,17 @@ class V7Instance():
                 self.fragment_time_in_force()
             col1, col2, col3, col4 = st.columns([1,1,1,1])
             with col1:
+                self.fragment_order_match_tolerance_pct()
+            with col2:
+                self.fragment_recv_window_ms()
+            with col3:
+                self.fragment_live_max_warmup_minutes()
+            with col4:
+                self.fragment_balance_hysteresis_snap_pct()
+            col1, col2, col3, col4 = st.columns([1,1,1,1])
+            with col1:
+                self.fragment_balance_override()
+            with col2:
                 self.inactive_coin_candle_ttl_minutes()
 
         #Filters

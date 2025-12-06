@@ -180,6 +180,29 @@ def bt_queue():
             del st.session_state.bt_log
             st.rerun()
         st.code(st.session_state.bt_log["log"])
+    active = [item for item in my_btq.items if item.is_running() or not item.is_finish()]
+    if active:
+        st.markdown("#### Progress")
+        for item in active:
+            value, label, stage = item.progress()
+            name = f"{item.symbol} ({item.user})"
+            
+            # Show stage-specific progress bars
+            if stage == "fetching":
+                st.progress(value)
+                st.caption(f"📥 {name}: {label}")
+            elif stage == "backtesting":
+                st.progress(value)
+                st.caption(f"📊 {name}: {label}")
+            elif stage == "complete":
+                st.progress(value)
+                st.caption(f"✅ {name}: {label}")
+            elif stage == "error":
+                st.progress(value)
+                st.caption(f"❌ {name}: {label}")
+            else:
+                st.progress(value)
+                st.caption(f"{name}: {label}")
 
 def bt_compare():
     # Init bt_results

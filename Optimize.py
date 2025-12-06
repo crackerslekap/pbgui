@@ -21,6 +21,7 @@ import pbgui_help
 from time import sleep
 import traceback
 import logging
+import re
 
 class OptimizeItem(Base):
     BOOLS = ['n', 'y']
@@ -48,6 +49,8 @@ class OptimizeItem(Base):
         self.drawdown_short = []
         self.stuck_long = []
         self.stuck_short = []
+        self._progress_history = []  # List of (timestamp, progress_value) tuples
+        self._start_time = None
         self.initialize()
 
     def initialize(self):
@@ -66,6 +69,187 @@ class OptimizeItem(Base):
         if self.finish < self.reruns:
             return False
         return True
+
+    def load_log_tail(self, size_kb: int = 64):
+        if self.log and self.log.exists():
+            with open(self.log, 'rb') as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+                f.seek(max(file_size - size_kb * 1024, 0))
+                return f.read().decode('utf-8', errors='ignore')
+
+    def _extract_progress_percent(self, log: str | None) -> float | None:
+        if not log:
+            return None
+        for line in reversed(log.splitlines()[-40:]):
+            match = re.search(r'(\d{1,3})(?:\.\d+)?\s*%', line)
+            if match:
+                pct = float(match.group(1))
+                if 0 <= pct <= 100:
+                    return pct
+        return None
+
+    def is_fetching(self):
+        """Check if currently fetching/downloading data"""
+        if self.is_running() and not self.is_finish():
+            log = self.load_log_tail()
+            if log:
+                fetch_indicators = [
+                    "downloading", "fetching", "Download", "Fetch",
+                    "loading data", "preparing data", "initializing"
+                ]
+                log_lower = log.lower()
+                if any(ind.lower() in log_lower for ind in fetch_indicators):
+                    # Check if optimization hasn't started yet
+                    opt_indicators = ["iteration", "optimizing", "generation", "fitness"]
+                    if not any(ind.lower() in log_lower for ind in opt_indicators):
+                        return True
+            # If running but no clear optimization activity, might be fetching
+            return True
+        return False
+
+    def _extract_iteration_progress(self, log: str | None) -> tuple[float | None, int | None, int | None]:
+        """Extract iteration progress: (progress_pct, current_iter, total_iters)"""
+        if not log:
+            return None, None, None
+        
+        # Try to find iteration patterns
+        patterns = [
+            r'iteration\s+(\d+)\s*[/]\s*(\d+)',
+            r'iter\s+(\d+)\s+of\s+(\d+)',
+            r'(\d+)\s*/\s*(\d+)\s+iterations?',
+            r'generation\s+(\d+)\s*[/]\s*(\d+)',
+        ]
+        
+        for pattern in patterns:
+            for line in reversed(log.splitlines()[-100:]):
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    if total > 0:
+                        pct = min((current / total) * 100, 100)
+                        return pct, current, total
+        
+        # Try to use oc.iters if available
+        if hasattr(self, 'oc') and hasattr(self.oc, 'iters') and self.oc.iters:
+            total_iters = self.oc.iters
+            # Try to find current iteration in log
+            for line in reversed(log.splitlines()[-100:]):
+                iter_match = re.search(r'(\d+)\s*(?:th|st|nd|rd)?\s+iteration', line, re.IGNORECASE)
+                if iter_match:
+                    current = int(iter_match.group(1))
+                    if current <= total_iters:
+                        pct = min((current / total_iters) * 100, 100)
+                        return pct, current, total_iters
+        
+        return None, None, None
+
+    def _calculate_eta(self, current_progress: float, progress_rate: float | None) -> str | None:
+        """Calculate ETA based on progress rate"""
+        if progress_rate is None or progress_rate <= 0:
+            return None
+        
+        remaining = 100 - current_progress
+        if remaining <= 0:
+            return "Complete"
+        
+        seconds_remaining = remaining / progress_rate
+        if seconds_remaining < 60:
+            return f"{int(seconds_remaining)}s"
+        elif seconds_remaining < 3600:
+            minutes = int(seconds_remaining / 60)
+            return f"{minutes}m"
+        else:
+            hours = int(seconds_remaining / 3600)
+            minutes = int((seconds_remaining % 3600) / 60)
+            return f"{hours}h {minutes}m"
+
+    def progress(self):
+        """Returns (progress_value, label, stage)"""
+        current_time = time.time()
+        
+        # Initialize start time if not set and process is running
+        if self._start_time is None and self.is_running():
+            self._start_time = current_time
+        
+        base = 0.0
+        if self.reruns:
+            base = min(self.finish / self.reruns, 1.0) * 100
+        
+        log = self.load_log_tail()
+        
+        # Determine stage
+        if self.is_finish():
+            stage = "complete"
+            progress_pct = 100.0
+            label = f"Complete ({self.finish}/{self.reruns})"
+            eta = None
+        elif self.is_fetching():
+            stage = "fetching"
+            if self._start_time:
+                elapsed = current_time - self._start_time
+                progress_pct = min(base + (elapsed / 300 * 10), base + 15)
+            else:
+                progress_pct = base + 5.0
+            label = "Fetching data..."
+            eta = None
+        elif self.is_running():
+            stage = "optimizing"
+            # Try to extract iteration progress
+            iter_pct, current_iter, total_iters = self._extract_iteration_progress(log)
+            if iter_pct is not None:
+                # Combine rerun progress with iteration progress
+                rerun_weight = base / 100
+                iter_weight = (100 - base) / 100
+                progress_pct = base + (iter_pct * iter_weight)
+                label = f"Iteration {current_iter}/{total_iters}"
+                # Calculate ETA
+                if len(self._progress_history) >= 2:
+                    recent = self._progress_history[-5:]
+                    if len(recent) >= 2:
+                        time_diff = recent[-1][0] - recent[0][0]
+                        progress_diff = recent[-1][1] - recent[0][1]
+                        if time_diff > 0 and progress_diff > 0:
+                            rate = progress_diff / time_diff
+                            eta = self._calculate_eta(progress_pct, rate)
+                        else:
+                            eta = None
+                    else:
+                        eta = None
+                else:
+                    eta = None
+            else:
+                pct = self._extract_progress_percent(log)
+                if pct is not None:
+                    progress_pct = max(base, pct)
+                else:
+                    progress_pct = max(base, 5.0)
+                label = f"Running... ({self.finish}/{self.reruns})"
+                eta = None
+        else:
+            stage = "queued"
+            progress_pct = base
+            label = f"Queued ({self.finish}/{self.reruns})" if self.reruns else "Queued"
+            eta = None
+        
+        # Update progress history
+        if self.is_running() and progress_pct > 0:
+            self._progress_history.append((current_time, progress_pct))
+            if len(self._progress_history) > 20:
+                self._progress_history = self._progress_history[-20:]
+        
+        # Reset if stopped
+        if not self.is_running() and self._start_time:
+            self._start_time = None
+            self._progress_history = []
+        
+        progress_value = min(progress_pct, 100) / 100
+        
+        if eta:
+            label = f"{label} (ETA: {eta})"
+        
+        return progress_value, label, stage
 
     def is_running(self):
         if self.pid():
@@ -751,6 +935,29 @@ class OptimizeQueue:
         if "view_opt_log" in st.session_state:
             st.button(f':negative_squared_cross_mark: {st.session_state.view_opt_log.position}', key="key_optimize_close_view_log")
             self.view_log(st.session_state.view_opt_log)
+        active = [item for item in self.items if item.is_running() or not item.is_finish()]
+        if active:
+            st.markdown("#### Progress")
+            for item in active:
+                value, label, stage = item.progress()
+                name = f"{item.symbol} ({item.oc.name})"
+                
+                # Show stage-specific progress bars
+                if stage == "fetching":
+                    st.progress(value)
+                    st.caption(f"📥 {name}: {label}")
+                elif stage == "optimizing":
+                    st.progress(value)
+                    st.caption(f"⚙️ {name}: {label}")
+                elif stage == "complete":
+                    st.progress(value)
+                    st.caption(f"✅ {name}: {label}")
+                elif stage == "error":
+                    st.progress(value)
+                    st.caption(f"❌ {name}: {label}")
+                else:
+                    st.progress(value)
+                    st.caption(f"{name}: {label}")
 
 class OptimizeResults:
     def __init__(self):
