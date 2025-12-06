@@ -1528,21 +1528,42 @@ class OptimizeV7Item:
 
     @st.fragment
     def fragment_optimizer_guide(self):
-        profile = self._build_profile()
-        symbol_line = "No coin selected; using generic guidance."
-        if profile["primary"]:
-            vol_text = f', vol/mcap {profile["vol_mcap"]:.2f}' if profile["vol_mcap"] else ""
-            symbol_line = (
-                f'Focus: {profile["primary"]} ({profile["label"]}, '
-                f'mcap {self._format_market_cap(profile["cap"])}{vol_text})'
-            )
-        st.subheader("Optimizer Guide")
-        st.caption(symbol_line)
-        st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
-        st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
-        st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
-        st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
-        st.markdown(f"- **Scoring:** {self._scoring_recommendation(profile)}")
+        try:
+            profile = self._build_profile()
+            symbol_line = "No coin selected; using generic guidance."
+            if profile["primary"]:
+                vol_text = f', vol/mcap {profile["vol_mcap"]:.2f}' if profile["vol_mcap"] else ""
+                symbol_line = (
+                    f'Focus: {profile["primary"]} ({profile["label"]}, '
+                    f'mcap {self._format_market_cap(profile["cap"])}{vol_text})'
+                )
+
+            with st.container(border=True):
+                st.subheader("Optimizer Guide")
+                st.caption(symbol_line)
+                g1, g2 = st.columns([1,1])
+                with g1:
+                    st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
+                    st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
+                    st.markdown(f"- **Coins:** {self._coin_recommendation(profile)}")
+                with g2:
+                    st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
+                    st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
+                    st.markdown(f"- **Scoring:** {self._scoring_recommendation(profile)}")
+        except Exception as e:
+            st.warning(f"Optimizer guide unavailable: {e}")
+
+    def _coin_recommendation(self, profile: dict) -> str:
+        # Encourage using filters and highlight thin liquidity
+        apply_filters = st.session_state.get("edit_opt_v7_apply_filters", False)
+        vol_mcap = profile.get("vol_mcap")
+        if profile["primary"] and vol_mcap and vol_mcap > 0.5 and not apply_filters:
+            return "high vol/mcap; enable apply_filters and raise market_cap floor to avoid pumpy pairs."
+        if not profile["primary"]:
+            return "pick 1-3 approved coins or turn on apply_filters to auto-select liquid names."
+        if profile["segment"] in ("micro_cap",) and not apply_filters:
+            return "micro-cap selected; consider apply_filters + vol/mcap < 0.30 to avoid slippage."
+        return "basket looks fine; widen approved list to 3-5 coins for more stable optimizer fitness."
 
     def _scoring_recommendation(self, profile: dict) -> str:
         scoring = set(self.config.optimize.scoring or [])
