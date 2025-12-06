@@ -23,6 +23,7 @@ import logging
 import os
 import fnmatch
 import re
+import statistics
 
 class OptimizeV7QueueItem:
     def __init__(self):
@@ -1092,7 +1093,7 @@ class OptimizeV7Item:
                 self.config.backtest.balance_sample_divider = st.session_state.edit_opt_v7_balance_sample_divider
         else:
             st.session_state.edit_opt_v7_balance_sample_divider = int(self.config.backtest.balance_sample_divider)
-        st.number_input("balance_sample_divider", min_value=1, step=1, format="%.0f", key="edit_opt_v7_balance_sample_divider", help=pbgui_help.balance_sample_divider)
+        st.number_input("balance_sample_divider", min_value=1, step=1, format="%d", key="edit_opt_v7_balance_sample_divider", help=pbgui_help.balance_sample_divider)
 
     # btc_collateral_cap
     @st.fragment
@@ -1142,12 +1143,16 @@ class OptimizeV7Item:
     # iters
     @st.fragment
     def fragment_iters(self):
+        # clamp to enforce 150k-300k as requested
+        min_iters = 150000
+        max_iters = 300000
         if "edit_opt_v7_iters" in st.session_state:
             if st.session_state.edit_opt_v7_iters != self.config.optimize.iters:
-                self.config.optimize.iters = st.session_state.edit_opt_v7_iters
+                self.config.optimize.iters = max(min_iters, min(max_iters, st.session_state.edit_opt_v7_iters))
         else:
+            self.config.optimize.iters = max(min_iters, min(max_iters, self.config.optimize.iters))
             st.session_state.edit_opt_v7_iters = self.config.optimize.iters
-        st.number_input("iters", step=1000, key="edit_opt_v7_iters", help=pbgui_help.opt_iters)
+        st.number_input("iters", min_value=min_iters, max_value=max_iters, step=1000, key="edit_opt_v7_iters", help=pbgui_help.opt_iters)
 
     # n_cpus
     @st.fragment
@@ -1413,7 +1418,12 @@ class OptimizeV7Item:
         info = self._lookup_symbol_data(primary)
         cap = info.get("market_cap") if info else 0
         vol_mcap = info.get("vol/mcap") if info else None
+        vol24 = info.get("volume_24h") if info else None
+        tags = info.get("tags") if info else []
+        price = info.get("price") if info else None
+        is_cpt = info.get("copy_trading") if info else False
         hype = bool(vol_mcap and vol_mcap >= 0.35)
+        memecoin = any(t.lower() in {"meme", "memecoin", "doge", "shib"} for t in tags) or (primary and primary.lower().startswith(("pepe", "bonk", "doge", "shib", "floki")))
         if primary and primary.startswith("BTC"):
             segment = "btc_like"
         elif cap and cap >= 10_000_000_000:
@@ -1438,6 +1448,11 @@ class OptimizeV7Item:
             "cap": cap or 0,
             "vol_mcap": vol_mcap,
             "hype": hype,
+            "vol24": vol24,
+            "tags": tags,
+            "price": price,
+            "copy_trading": is_cpt,
+            "memecoin": memecoin,
         }
 
     def _genetics_recommendation(self, profile: dict) -> str:
@@ -1466,65 +1481,147 @@ class OptimizeV7Item:
             f"eta {eta_range[0]}-{eta_range[1]} (current {opt.mutation_eta:.1f})."
         )
 
-    def _bounds_recommendation(self, profile: dict) -> str:
-        b = self.config.optimize.bounds
-        markup = f"{b.long_close_grid_markup_start_0:.3f}-{b.long_close_grid_markup_start_1:.3f}"
-        spacing = f"{b.long_entry_grid_spacing_pct_0:.3f}-{b.long_entry_grid_spacing_pct_1:.3f}"
-        twe = f"{b.long_total_wallet_exposure_limit_0:.2f}-{b.long_total_wallet_exposure_limit_1:.2f}"
+    def _long_bounds_profiles(self, profile: dict) -> dict:
+        """Return recommended ranges for long bounds keyed by profile (risky/conservative)."""
+        # volatility_factor based on vol/mcap, hype, memecoin tags
+        vol_factor = 1.0
+        if profile["vol_mcap"] and profile["vol_mcap"] > 0:
+            vol_factor += min(max((profile["vol_mcap"] - 0.15) * 1.2, -0.25), 0.75)
+        if profile["hype"] or profile["memecoin"]:
+            vol_factor += 0.35
         if profile["segment"] in ("btc_like", "large_cap"):
-            return (
-                f"Tighten grids for depth: close markup start around 0.01-0.05 "
-                f"(current {markup}), entry spacing 0.01-0.03 (current {spacing}), "
-                f"and keep total_wallet_exposure_limit near 0.25-0.45 (current {twe})."
-            )
-        elif profile["segment"] in ("mid_cap", "small_cap") and not profile["hype"]:
-            return (
-                f"Balanced spread: markup start 0.03-0.08 (current {markup}), entry spacing 0.02-0.05 "
-                f"(current {spacing}), exposure guardrails 0.20-0.40 (current {twe}); "
-                f"use trailing thresholds in the 0.08-0.20 band to avoid churn."
-            )
-        else:
-            return (
-                f"Widen for volatile names: markup start 0.05-0.12 (current {markup}), spacing 0.03-0.08 "
-                f"(current {spacing}), cap exposure 0.15-0.30 (current {twe}); "
-                f"raise trailing thresholds toward 0.15-0.35 to let runners breathe."
-            )
+            vol_factor -= 0.2
+        vol_factor = max(0.6, min(1.6, vol_factor))
+
+        def scale(base):
+            return (round(base[0] * vol_factor, 4), round(base[1] * vol_factor, 4))
+
+        base = {
+            "long_close_grid_markup_start": (0.01, 0.06),
+            "long_close_grid_markup_end": (0.015, 0.08),
+            "long_close_grid_qty_pct": (0.05, 0.4),
+            "long_close_trailing_grid_ratio": (-0.2, 0.2),
+            "long_close_trailing_qty_pct": (0.05, 0.35),
+            "long_close_trailing_retracement_pct": (0.01, 0.12),
+            "long_close_trailing_threshold_pct": (-0.05, 0.2),
+            "long_ema_span_0": (50, 500),
+            "long_ema_span_1": (100, 800),
+            "long_entry_grid_double_down_factor": (0.6, 2.0),
+            "long_entry_grid_spacing_log_span_hours": (12, 72),
+            "long_entry_grid_spacing_log_weight": (0.4, 1.6),
+            "long_entry_grid_spacing_pct": (0.01, 0.08),
+            "long_entry_grid_spacing_we_weight": (0.8, 1.4),
+            "long_entry_initial_ema_dist": (-0.05, 0.03),
+            "long_entry_initial_qty_pct": (0.08, 0.35),
+            "long_entry_trailing_double_down_factor": (0.8, 2.5),
+            "long_entry_trailing_grid_ratio": (-0.15, 0.25),
+            "long_entry_trailing_retracement_pct": (0.02, 0.14),
+            "long_entry_trailing_threshold_pct": (-0.08, 0.15),
+            "long_filter_log_range_ema_span": (24, 240),
+            "long_filter_volume_drop_pct": (0.05, 0.3),
+            "long_filter_volume_ema_span": (6, 48),
+            "long_n_positions": (2, 8),
+            "long_total_wallet_exposure_limit": (0.18, 0.55),
+            "long_unstuck_close_pct": (0.02, 0.2),
+            "long_unstuck_ema_dist": (-0.1, 0.05),
+            "long_unstuck_loss_allowance_pct": (0.1, 0.45),
+            "long_unstuck_threshold": (-0.08, 0.08),
+        }
+        risky = {k: scale((v[0]*0.8, v[1]*1.2)) for k, v in base.items()}
+        conservative = {k: scale((v[0]*1.0, v[1]*0.9)) for k, v in base.items()}
+        return {"risky": risky, "conservative": conservative}
 
     def _limits_recommendation(self, profile: dict) -> str:
         limits = self.config.optimize.limits or {}
-        has_drawdown = any("drawdown_worst" in k for k in limits)
-        has_volume = any("volume_pct_per_day_avg" in k for k in limits)
-        has_jerkiness = any("equity_jerkiness" in k for k in limits)
         hints = []
-        if not has_drawdown:
-            hints.append("add drawdown_worst cap around 0.35-0.45")
-        if not has_volume and profile["segment"] not in ("btc_like", "large_cap"):
-            hints.append("penalize volume_pct_per_day_avg above 8-12 to avoid thin books")
-        if not has_jerkiness and profile["hype"]:
-            hints.append("cap equity_jerkiness below 0.25-0.35 to stop whipsaws")
+        if not any("drawdown_worst" in k for k in limits):
+            hints.append("add drawdown_worst cap 0.30-0.45 to stop equity holes")
+        if not any("drawdown_worst_mean_1pct" in k for k in limits):
+            hints.append("add drawdown_worst_mean_1pct 0.20-0.30 for smoother equity")
+        if not any("equity_choppiness" in k for k in limits):
+            hints.append("penalize equity_choppiness_w above 0.35-0.45 to avoid staircasing")
+        if not any("equity_jerkiness" in k for k in limits):
+            hints.append("cap equity_jerkiness_w under 0.30-0.40 to reduce whipsaw risk")
+        if profile["segment"] not in ("btc_like", "large_cap") and not any("volume_pct_per_day_avg" in k for k in limits):
+            hints.append("limit volume_pct_per_day_avg under 8-12 to avoid illiquid fills")
+        if not any("exponential_fit_error" in k for k in limits):
+            hints.append("add exponential_fit_error_w under 0.25 to avoid runaway drift")
+        if not any("positions_held_per_day" in k for k in limits):
+            hints.append("penalize positions_held_per_day above 18-30 to avoid over-trading")
         if not hints:
-            hints.append("existing limits look balanced; tighten thresholds if you see noisy fills")
+            hints.append("limits set looks good; tighten choppiness/jerkiness if equity staircases")
         return "; ".join(hints) + "."
 
     def _runtime_recommendation(self, profile: dict) -> str:
         opt = self.config.optimize
         if profile["segment"] in ("btc_like", "large_cap"):
-            iters = "80k-140k"
+            iters = "150k-200k"
             pop = "600-900"
             offspring = "1.0-1.2"
         elif profile["segment"] in ("mid_cap", "small_cap") and not profile["hype"]:
-            iters = "100k-180k"
+            iters = "180k-240k"
             pop = "900-1300"
-            offspring = "1.1-1.4"
+            offspring = "1.1-1.3"
         else:
-            iters = "140k-220k"
-            pop = "1200-1800"
-            offspring = "1.2-1.5"
+            iters = "220k-300k"
+            pop = "1200-1700"
+            offspring = "1.2-1.4"
         return (
             f"Iters {iters} (current {opt.iters:,}), population {pop} "
             f"(current {opt.population_size:,}), offspring_multiplier {offspring} "
             f"(current {opt.offspring_multiplier:.2f})."
         )
+
+    def _historical_samples(self, symbol: str | None, max_files: int = 30):
+        """Collect prior configs for the symbol from presets, queue, and backtests to learn from past runs."""
+        files = []
+        pbgdir = PBGDIR
+        if symbol:
+            files.extend(sorted(Path(f"{pbgdir}/data/opt_v7_presets").glob("*.json")))
+            files.extend(sorted(Path(f"{pbgdir}/data/opt_v7_queue").glob("*.json")))
+            files.extend(sorted(Path(f"{pb7dir()}/backtests/pbgui").glob("**/config.json")))
+        samples = []
+        for path in files[:max_files]:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                approved = (cfg.get("live", {}) or {}).get("approved_coins", {}).get("long", [])
+                if symbol and approved and symbol not in approved:
+                    continue
+                samples.append(cfg)
+            except Exception:
+                continue
+        return samples
+
+    def _historical_bounds_hint(self, symbol: str | None) -> str:
+        samples = self._historical_samples(symbol)
+        if not samples:
+            return "No archive/previous configs found for this coin yet."
+        keys = [
+            ("optimize", "bounds", "long_entry_grid_spacing_pct"),
+            ("optimize", "bounds", "long_close_grid_markup_start"),
+            ("optimize", "bounds", "long_total_wallet_exposure_limit"),
+            ("optimize", "bounds", "long_entry_initial_qty_pct"),
+            ("optimize", "bounds", "long_entry_trailing_threshold_pct"),
+        ]
+        agg = {}
+        for cfg in samples:
+            for path in keys:
+                cur = cfg
+                for p in path:
+                    cur = cur.get(p, {})
+                    if cur is None:
+                        break
+                if isinstance(cur, list) and len(cur) == 2:
+                    agg.setdefault(path[-1], []).append(cur)
+        parts = []
+        for k, vals in agg.items():
+            lows = [v[0] for v in vals]
+            highs = [v[1] for v in vals]
+            parts.append(f"{k}: ~{statistics.median(lows):.3f}-{statistics.median(highs):.3f} from {len(vals)} runs")
+        if not parts:
+            return "Archive configs loaded but no bounds found to learn from."
+        return "Archive/past medians → " + "; ".join(parts)
 
     @st.fragment
     def fragment_optimizer_guide(self):
@@ -1537,19 +1634,60 @@ class OptimizeV7Item:
                     f'Focus: {profile["primary"]} ({profile["label"]}, '
                     f'mcap {self._format_market_cap(profile["cap"])}{vol_text})'
                 )
-
+            risk_pref = st.session_state.get("opt_v7_risk_pref", "conservative")
+            risk_pref = st.radio("Risk preference", ["conservative", "risky"], horizontal=True, key="opt_v7_risk_pref")
+            bounds_profiles = self._long_bounds_profiles(profile)
+            chosen_bounds = bounds_profiles.get(risk_pref, bounds_profiles["conservative"])
+            hist_hint = self._historical_bounds_hint(profile["primary"])
             with st.container(border=True):
                 st.subheader("Optimizer Guide")
                 st.caption(symbol_line)
                 g1, g2 = st.columns([1,1])
                 with g1:
-                    st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
-                    st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
-                    st.markdown(f"- **Coins:** {self._coin_recommendation(profile)}")
-                with g2:
                     st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
                     st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
+                    st.markdown(f"- **Coins:** {self._coin_recommendation(profile)}")
+                    st.markdown(f"- **History:** {hist_hint}")
+                with g2:
+                    st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
                     st.markdown(f"- **Scoring:** {self._scoring_recommendation(profile)}")
+                st.markdown("**Long bounds (tailored)**")
+                colA, colB = st.columns([1,1])
+                with colA:
+                    st.markdown(
+                        "\n".join([
+                            f"- close markup start {chosen_bounds['long_close_grid_markup_start'][0]:.3f}-{chosen_bounds['long_close_grid_markup_start'][1]:.3f}",
+                            f"- close markup end {chosen_bounds['long_close_grid_markup_end'][0]:.3f}-{chosen_bounds['long_close_grid_markup_end'][1]:.3f}",
+                            f"- close qty pct {chosen_bounds['long_close_grid_qty_pct'][0]:.2f}-{chosen_bounds['long_close_grid_qty_pct'][1]:.2f}",
+                            f"- trailing close retrace {chosen_bounds['long_close_trailing_retracement_pct'][0]:.3f}-{chosen_bounds['long_close_trailing_retracement_pct'][1]:.3f}",
+                            f"- trailing close threshold {chosen_bounds['long_close_trailing_threshold_pct'][0]:.3f}-{chosen_bounds['long_close_trailing_threshold_pct'][1]:.3f}",
+                            f"- EMA spans {chosen_bounds['long_ema_span_0'][0]:.0f}-{chosen_bounds['long_ema_span_0'][1]:.0f}/{chosen_bounds['long_ema_span_1'][0]:.0f}-{chosen_bounds['long_ema_span_1'][1]:.0f}",
+                            f"- entry spacing pct {chosen_bounds['long_entry_grid_spacing_pct'][0]:.3f}-{chosen_bounds['long_entry_grid_spacing_pct'][1]:.3f}",
+                            f"- entry spacing log span {chosen_bounds['long_entry_grid_spacing_log_span_hours'][0]:.0f}-{chosen_bounds['long_entry_grid_spacing_log_span_hours'][1]:.0f}h",
+                            f"- entry spacing log weight {chosen_bounds['long_entry_grid_spacing_log_weight'][0]:.2f}-{chosen_bounds['long_entry_grid_spacing_log_weight'][1]:.2f}",
+                            f"- entry initial qty pct {chosen_bounds['long_entry_initial_qty_pct'][0]:.2f}-{chosen_bounds['long_entry_initial_qty_pct'][1]:.2f}",
+                            f"- entry trailing threshold {chosen_bounds['long_entry_trailing_threshold_pct'][0]:.3f}-{chosen_bounds['long_entry_trailing_threshold_pct'][1]:.3f}",
+                            f"- entry trailing retrace {chosen_bounds['long_entry_trailing_retracement_pct'][0]:.3f}-{chosen_bounds['long_entry_trailing_retracement_pct'][1]:.3f}",
+                            f"- entry trailing DD factor {chosen_bounds['long_entry_trailing_double_down_factor'][0]:.2f}-{chosen_bounds['long_entry_trailing_double_down_factor'][1]:.2f}",
+                            f"- entry DD factor {chosen_bounds['long_entry_grid_double_down_factor'][0]:.2f}-{chosen_bounds['long_entry_grid_double_down_factor'][1]:.2f}",
+                        ])
+                    )
+                with colB:
+                    st.markdown(
+                        "\n".join([
+                            f"- filter log range ema span {chosen_bounds['long_filter_log_range_ema_span'][0]:.0f}-{chosen_bounds['long_filter_log_range_ema_span'][1]:.0f}",
+                            f"- filter vol drop pct {chosen_bounds['long_filter_volume_drop_pct'][0]:.2f}-{chosen_bounds['long_filter_volume_drop_pct'][1]:.2f}",
+                            f"- filter vol ema span {chosen_bounds['long_filter_volume_ema_span'][0]:.0f}-{chosen_bounds['long_filter_volume_ema_span'][1]:.0f}",
+                            f"- total_wallet_exposure_limit {chosen_bounds['long_total_wallet_exposure_limit'][0]:.2f}-{chosen_bounds['long_total_wallet_exposure_limit'][1]:.2f}",
+                            f"- n_positions {int(chosen_bounds['long_n_positions'][0])}-{int(chosen_bounds['long_n_positions'][1])}",
+                            f"- unstuck close pct {chosen_bounds['long_unstuck_close_pct'][0]:.2f}-{chosen_bounds['long_unstuck_close_pct'][1]:.2f}",
+                            f"- unstuck ema dist {chosen_bounds['long_unstuck_ema_dist'][0]:.3f}-{chosen_bounds['long_unstuck_ema_dist'][1]:.3f}",
+                            f"- unstuck loss allowance {chosen_bounds['long_unstuck_loss_allowance_pct'][0]:.2f}-{chosen_bounds['long_unstuck_loss_allowance_pct'][1]:.2f}",
+                            f"- unstuck threshold {chosen_bounds['long_unstuck_threshold'][0]:.3f}-{chosen_bounds['long_unstuck_threshold'][1]:.3f}",
+                            f"- close trailing qty pct {chosen_bounds['long_close_trailing_qty_pct'][0]:.2f}-{chosen_bounds['long_close_trailing_qty_pct'][1]:.2f}",
+                            f"- close trailing grid ratio {chosen_bounds['long_close_trailing_grid_ratio'][0]:.2f}-{chosen_bounds['long_close_trailing_grid_ratio'][1]:.2f}",
+                        ])
+                    )
         except Exception as e:
             st.warning(f"Optimizer guide unavailable: {e}")
 
