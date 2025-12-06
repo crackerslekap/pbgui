@@ -917,28 +917,68 @@ class PBRun():
         if Path("/var/run/reboot-required").exists():
             self.reboot = True
 
+    def _git_origin_commit(self, git_dir: Path, branches: list[str]) -> str:
+        """
+        Fetch origin safely and return the latest commit for the first existing branch.
+        Falls back to origin/HEAD if branches are missing.
+        """
+        if not git_dir.exists():
+            return ""
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        subprocess.run(["git", "--git-dir", f'{git_dir}', "fetch", "origin", "--prune"], env=env)
+        for branch in branches:
+            proc = subprocess.run(
+                ["git", "--git-dir", f'{git_dir}', "log", "-n", "1", "--pretty=format:%H", f'origin/{branch}'],
+                stdout=subprocess.PIPE, text=True, env=env
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        proc = subprocess.run(
+            ["git", "--git-dir", f'{git_dir}', "ls-remote", "origin", "HEAD"],
+            stdout=subprocess.PIPE, text=True, env=env
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            # ls-remote output: "<hash>\tHEAD"
+            return proc.stdout.split()[0]
+        return ""
+
+    def _git_origin_readme_version(self, git_dir: Path, branches: list[str]) -> str:
+        """Read version string from README on the first available branch."""
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        for branch in branches:
+            proc = subprocess.run(
+                ["git", "--git-dir", f'{git_dir}', "show", f'origin/{branch}:README.md'],
+                stdout=subprocess.PIPE, text=True, env=env
+            )
+            if proc.returncode == 0 and proc.stdout:
+                for line in proc.stdout.splitlines():
+                    version = re.search('v[0-9.]+', line)
+                    if version:
+                        return version.group(0)
+        # Fallback to origin/HEAD
+        proc = subprocess.run(
+            ["git", "--git-dir", f'{git_dir}', "show", "origin/HEAD:README.md"],
+            stdout=subprocess.PIPE, text=True, env=env
+        )
+        if proc.returncode == 0 and proc.stdout:
+            for line in proc.stdout.splitlines():
+                version = re.search('v[0-9.]+', line)
+                if version:
+                    return version.group(0)
+        return ""
+
     def load_git_origin(self):
         """git fetch origin and load last commit from origin/master"""
         pbgui_git = Path(f'{self.pbgdir}/.git')
-        if pbgui_git.exists():
-            pbgui_git = Path(f'{self.pbgdir}/.git')
-            subprocess.run(["git", "--git-dir", f'{pbgui_git}', "fetch", "origin"])
-            pbgui_commit = subprocess.run(["git", "--git-dir", f'{pbgui_git}', "log", "-n", "1", "--pretty=format:%H", "origin/main"], stdout=subprocess.PIPE, text=True)
-            self.pbgui_commit_origin = pbgui_commit.stdout
+        self.pbgui_commit_origin = self._git_origin_commit(pbgui_git, ["main", "master"])
         if self.pbdir:
             pb6_git = Path(f'{self.pbdir}/.git')
-            if pb6_git.exists():
-                pb6_git = Path(f'{self.pbdir}/.git')
-                subprocess.run(["git", "--git-dir", f'{pb6_git}', "fetch", "origin"])
-                pb6_commit = subprocess.run(["git", "--git-dir", f'{pb6_git}', "log", "-n", "1", "--pretty=format:%H", "origin/v6.1.4b_latest_v6"], stdout=subprocess.PIPE, text=True)
-                self.pb6_commit_origin = pb6_commit.stdout
+            self.pb6_commit_origin = self._git_origin_commit(pb6_git, ["v6.1.4b_latest_v6", "main", "master"])
         if self.pb7dir:
             pb7_git = Path(f'{self.pb7dir}/.git')
-            if pb7_git.exists():
-                pb7_git = Path(f'{self.pb7dir}/.git')
-                subprocess.run(["git", "--git-dir", f'{pb7_git}', "fetch", "origin"])
-                pb7_commit = subprocess.run(["git", "--git-dir", f'{pb7_git}', "log", "-n", "1", "--pretty=format:%H", "origin/master"], stdout=subprocess.PIPE, text=True)
-                self.pb7_commit_origin = pb7_commit.stdout
+            self.pb7_commit_origin = self._git_origin_commit(pb7_git, ["master", "main"])
 
     def load_git_commits(self):
         """Load the git commit hash of pbgui, pb6 and pb7 using git log -n 1"""
@@ -963,32 +1003,11 @@ class PBRun():
     def load_versions_origin(self):
         """git show origin:README.md and load the versions of pbgui, pb6 and pb7"""
         if Path(f'{self.pbgdir}/.git').exists():
-            pbgui_readme_origin = subprocess.run(["git", "--git-dir", f'{self.pbgdir}/.git', "show", "origin/main:README.md"], stdout=subprocess.PIPE, text=True)
-            lines = pbgui_readme_origin.stdout.splitlines()
-            for line in lines:
-                #find regex regex_search('^#? ?v[0-9.]+'
-                version = re.search('v[0-9.]+', line)
-                if version:
-                    self.pbgui_version_origin = version.group(0)
-                    break
+            self.pbgui_version_origin = self._git_origin_readme_version(Path(f'{self.pbgdir}/.git'), ["main", "master"])
         if Path(f'{self.pbdir}/.git').exists():
-            pb6_readme_origin = subprocess.run(["git", "--git-dir", f'{self.pbdir}/.git', "show", "origin/v6.1.4b_latest_v6:README.md"], stdout=subprocess.PIPE, text=True)
-            lines = pb6_readme_origin.stdout.splitlines()
-            for line in lines:
-                #find regex regex_search('^#? ?v[0-9.]+'
-                version = re.search('v[0-9.]+', line)
-                if version:
-                    self.pb6_version_origin = version.group(0)
-                    break
+            self.pb6_version_origin = self._git_origin_readme_version(Path(f'{self.pbdir}/.git'), ["v6.1.4b_latest_v6", "main", "master"])
         if Path(f'{self.pb7dir}/.git').exists():
-            pb7_readme_origin = subprocess.run(["git", "--git-dir", f'{self.pb7dir}/.git', "show", "origin/master:README.md"], stdout=subprocess.PIPE, text=True)
-            lines = pb7_readme_origin.stdout.splitlines()
-            for line in lines:
-                #find regex regex_search('^#? ?v[0-9.]+'
-                version = re.search('v[0-9.]+', line)
-                if version:
-                    self.pb7_version_origin = version.group(0)
-                    break
+            self.pb7_version_origin = self._git_origin_readme_version(Path(f'{self.pb7dir}/.git'), ["master", "main"])
 
     def load_versions(self):
         """Load the versions of pbgui, pb6 and pb7 from README.md"""
