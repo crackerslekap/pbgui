@@ -1373,6 +1373,177 @@ class OptimizeV7Item:
             help=pbgui_help.scoring,
         )
 
+    def _selected_symbols_for_guide(self) -> list[str]:
+        symbols = []
+        for key in ("edit_opt_v7_approved_coins_long", "edit_opt_v7_approved_coins_short"):
+            if key in st.session_state:
+                symbols.extend(st.session_state[key])
+        if not symbols:
+            symbols.extend(self.config.live.approved_coins.long)
+            symbols.extend(self.config.live.approved_coins.short)
+        # Preserve order while deduping
+        return list(dict.fromkeys(symbols))
+
+    def _lookup_symbol_data(self, symbol: str | None):
+        if not symbol:
+            return None
+        for key in ("coindata_bybit", "coindata_binance", "coindata_gateio", "coindata_bitget"):
+            cd = st.session_state.get(key)
+            if not cd:
+                continue
+            try:
+                for info in cd.symbols_data:
+                    if info.get("symbol") == symbol:
+                        return info
+            except Exception:
+                continue
+        return None
+
+    def _format_market_cap(self, cap: int | float | None) -> str:
+        if not cap or cap <= 0:
+            return "n/a"
+        for unit, div in (("T", 1e12), ("B", 1e9), ("M", 1e6)):
+            if cap >= div:
+                return f'{cap/div:.1f}{unit}'
+        return f'{cap:,.0f}'
+
+    def _build_profile(self) -> dict:
+        symbols = self._selected_symbols_for_guide()
+        primary = symbols[0] if symbols else None
+        info = self._lookup_symbol_data(primary)
+        cap = info.get("market_cap") if info else 0
+        vol_mcap = info.get("vol/mcap") if info else None
+        hype = bool(vol_mcap and vol_mcap >= 0.35)
+        if primary and primary.startswith("BTC"):
+            segment = "btc_like"
+        elif cap and cap >= 10_000_000_000:
+            segment = "large_cap"
+        elif cap and cap >= 1_000_000_000:
+            segment = "mid_cap"
+        elif cap and cap >= 200_000_000:
+            segment = "small_cap"
+        else:
+            segment = "micro_cap"
+        label = {
+            "btc_like": "Deep-liquidity large cap",
+            "large_cap": "Large cap",
+            "mid_cap": "Mid cap",
+            "small_cap": "Small cap",
+            "micro_cap": "Micro/high beta",
+        }.get(segment, "Mixed basket")
+        return {
+            "primary": primary,
+            "segment": segment,
+            "label": label,
+            "cap": cap or 0,
+            "vol_mcap": vol_mcap,
+            "hype": hype,
+        }
+
+    def _genetics_recommendation(self, profile: dict) -> str:
+        opt = self.config.optimize
+        segment = profile["segment"]
+        hype = profile["hype"]
+        if segment in ("btc_like", "large_cap"):
+            cp_range = (0.55, 0.70)
+            mp_range = (0.18, 0.32)
+            indpb_range = (0.05, 0.12)
+            eta_range = (18, 28)
+        elif segment in ("mid_cap", "small_cap") and not hype:
+            cp_range = (0.6, 0.78)
+            mp_range = (0.25, 0.45)
+            indpb_range = (0.1, 0.22)
+            eta_range = (14, 24)
+        else:
+            cp_range = (0.65, 0.85)
+            mp_range = (0.35, 0.55)
+            indpb_range = (0.18, 0.32)
+            eta_range = (10, 18)
+        return (
+            f"Crossover {cp_range[0]:.2f}-{cp_range[1]:.2f} "
+            f"(current {opt.crossover_probability:.2f}), mutation {mp_range[0]:.2f}-{mp_range[1]:.2f} "
+            f"(current {opt.mutation_probability:.2f}, indpb {opt.mutation_indpb:.2f}), "
+            f"eta {eta_range[0]}-{eta_range[1]} (current {opt.mutation_eta:.1f})."
+        )
+
+    def _bounds_recommendation(self, profile: dict) -> str:
+        b = self.config.optimize.bounds
+        markup = f"{b.long_close_grid_markup_start_0:.3f}-{b.long_close_grid_markup_start_1:.3f}"
+        spacing = f"{b.long_entry_grid_spacing_pct_0:.3f}-{b.long_entry_grid_spacing_pct_1:.3f}"
+        twe = f"{b.long_total_wallet_exposure_limit_0:.2f}-{b.long_total_wallet_exposure_limit_1:.2f}"
+        if profile["segment"] in ("btc_like", "large_cap"):
+            return (
+                f"Tighten grids for depth: close markup start around 0.01-0.05 "
+                f"(current {markup}), entry spacing 0.01-0.03 (current {spacing}), "
+                f"and keep total_wallet_exposure_limit near 0.25-0.45 (current {twe})."
+            )
+        elif profile["segment"] in ("mid_cap", "small_cap") and not profile["hype"]:
+            return (
+                f"Balanced spread: markup start 0.03-0.08 (current {markup}), entry spacing 0.02-0.05 "
+                f"(current {spacing}), exposure guardrails 0.20-0.40 (current {twe}); "
+                f"use trailing thresholds in the 0.08-0.20 band to avoid churn."
+            )
+        else:
+            return (
+                f"Widen for volatile names: markup start 0.05-0.12 (current {markup}), spacing 0.03-0.08 "
+                f"(current {spacing}), cap exposure 0.15-0.30 (current {twe}); "
+                f"raise trailing thresholds toward 0.15-0.35 to let runners breathe."
+            )
+
+    def _limits_recommendation(self, profile: dict) -> str:
+        limits = self.config.optimize.limits or {}
+        has_drawdown = any("drawdown_worst" in k for k in limits)
+        has_volume = any("volume_pct_per_day_avg" in k for k in limits)
+        has_jerkiness = any("equity_jerkiness" in k for k in limits)
+        hints = []
+        if not has_drawdown:
+            hints.append("add drawdown_worst cap around 0.35-0.45")
+        if not has_volume and profile["segment"] not in ("btc_like", "large_cap"):
+            hints.append("penalize volume_pct_per_day_avg above 8-12 to avoid thin books")
+        if not has_jerkiness and profile["hype"]:
+            hints.append("cap equity_jerkiness below 0.25-0.35 to stop whipsaws")
+        if not hints:
+            hints.append("existing limits look balanced; tighten thresholds if you see noisy fills")
+        return "; ".join(hints) + "."
+
+    def _runtime_recommendation(self, profile: dict) -> str:
+        opt = self.config.optimize
+        if profile["segment"] in ("btc_like", "large_cap"):
+            iters = "80k-140k"
+            pop = "600-900"
+            offspring = "1.0-1.2"
+        elif profile["segment"] in ("mid_cap", "small_cap") and not profile["hype"]:
+            iters = "100k-180k"
+            pop = "900-1300"
+            offspring = "1.1-1.4"
+        else:
+            iters = "140k-220k"
+            pop = "1200-1800"
+            offspring = "1.2-1.5"
+        return (
+            f"Iters {iters} (current {opt.iters:,}), population {pop} "
+            f"(current {opt.population_size:,}), offspring_multiplier {offspring} "
+            f"(current {opt.offspring_multiplier:.2f})."
+        )
+
+    @st.fragment
+    def fragment_optimizer_guide(self):
+        profile = self._build_profile()
+        symbol_line = "No coin selected; using generic guidance."
+        if profile["primary"]:
+            vol_text = f', vol/mcap {profile["vol_mcap"]:.2f}' if profile["vol_mcap"] else ""
+            symbol_line = (
+                f'Focus: {profile["primary"]} ({profile["label"]}, '
+                f'mcap {self._format_market_cap(profile["cap"])}{vol_text})'
+            )
+        with st.container(border=True):
+            st.markdown("#### Optimizer Guide")
+            st.caption(symbol_line)
+            st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
+            st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
+            st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
+            st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
+
     # filters
     def fragment_filter_coins(self):
         col1, col2, col3, col4, col5 = st.columns([1,1,1,0.5,0.5], vertical_alignment="bottom")
@@ -2854,6 +3025,7 @@ class OptimizeV7Item:
 
         # Filters
         self.fragment_filter_coins()
+        self.fragment_optimizer_guide()
 
         # Optimizer Bounds
         col1, col2 = st.columns([1,1])
