@@ -1536,13 +1536,29 @@ class OptimizeV7Item:
                 f'Focus: {profile["primary"]} ({profile["label"]}, '
                 f'mcap {self._format_market_cap(profile["cap"])}{vol_text})'
             )
-        with st.container(border=True):
-            st.markdown("#### Optimizer Guide")
-            st.caption(symbol_line)
-            st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
-            st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
-            st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
-            st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
+        st.subheader("Optimizer Guide")
+        st.caption(symbol_line)
+        st.markdown(f"- **Bounds:** {self._bounds_recommendation(profile)}")
+        st.markdown(f"- **Genetics:** {self._genetics_recommendation(profile)}")
+        st.markdown(f"- **Limits:** {self._limits_recommendation(profile)}")
+        st.markdown(f"- **Runtime:** {self._runtime_recommendation(profile)}")
+        st.markdown(f"- **Scoring:** {self._scoring_recommendation(profile)}")
+
+    def _scoring_recommendation(self, profile: dict) -> str:
+        scoring = set(self.config.optimize.scoring or [])
+        suggestions = []
+        if not scoring.intersection({"gain", "adg", "mdg", "btc_gain"}):
+            suggestions.append("add gain/mdg to keep profitability pressure")
+        if not scoring.intersection({"drawdown_worst", "btc_drawdown_worst"}):
+            suggestions.append("add drawdown_worst to avoid sharp holes")
+        if profile["segment"] in ("micro_cap",) and not scoring.intersection({"equity_jerkiness", "equity_choppiness"}):
+            suggestions.append("track equity_jerkiness on high beta names")
+        if profile["segment"] in ("btc_like", "large_cap") and not scoring.intersection({"sharpe_ratio", "omega_ratio"}):
+            suggestions.append("blend sharpe_ratio/omega_ratio for smoothness")
+        if not suggestions:
+            suggestions.append("current scoring looks balanced; consider weighting btc_* metrics if collateralized in BTC")
+        current = ", ".join(sorted(scoring)) if scoring else "none"
+        return f"{'; '.join(suggestions)} (current: {current})."
 
     # filters
     def fragment_filter_coins(self):
